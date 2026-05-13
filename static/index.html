@@ -265,8 +265,12 @@
       <select id="swap-driver"></select>
     </div>
     <div class="form-group">
-      <label>Fuel Level After Refuel (litres)</label>
-      <input type="number" id="swap-fuel" step="0.1" min="0" max="6" placeholder="5.5">
+      <label>Swap on lap (current lap or earlier — retags scraped laps)</label>
+      <input type="number" id="swap-lap" min="1" placeholder="auto (next lap)">
+    </div>
+    <div class="form-group">
+      <label>Fuel Level After Refuel (litres) — defaults to full tank</label>
+      <input type="number" id="swap-fuel" step="0.1" min="0" max="6" placeholder="10.0">
     </div>
     <div style="padding:8px;background:#0f172a;border-radius:6px;font-size:13px" id="swap-preview"></div>
     <div class="modal-actions">
@@ -286,7 +290,7 @@
     </div>
     <div class="form-group">
       <label>Total Fuel Level After Fill (litres, optional)</label>
-      <input type="number" id="fill-total" step="0.1" min="0" max="6" placeholder="5.5">
+      <input type="number" id="fill-total" step="0.1" min="0" max="6" placeholder="10.0">
     </div>
     <div class="modal-actions">
       <button class="btn" onclick="Dashboard.closeModal('modal-fuel-overlay')">Cancel</button>
@@ -305,7 +309,7 @@
     </div>
     <div class="form-group">
       <label>Fuel Start (litres)</label>
-      <input type="number" id="prac-fuel-start" step="0.1" min="0" max="6" placeholder="5.5">
+      <input type="number" id="prac-fuel-start" step="0.1" min="0" max="6" placeholder="10.0">
     </div>
     <div class="form-group">
       <label>Fuel End (litres)</label>

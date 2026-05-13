@@ -171,15 +171,15 @@ All data is stored in `race_data.db` (SQLite). The file is created automatically
 
 | Key | Default | Meaning |
 |---|---|---|
-| `tank_capacity_L` | `5.5` | Full tank volume |
+| `tank_capacity_L` | `10.0` | Full tank volume |
 | `safety_margin_laps` | `2` | Laps before empty to trigger pit |
-| `fuel_level_L` | `5.5` | Current estimated fuel level |
+| `fuel_level_L` | `10.0` | Current estimated fuel level |
 | `current_lap` | `0` | Running lap counter |
 | `race_started` | `0` | Whether race has been started |
 | `scraper_enabled` | `0` | Scraper on/off flag |
 | `current_driver` | — | Name of driver currently in kart |
 
-The `tank_capacity_L` default of 5.5 is an estimate. **Measure your actual tank before the race** and update it via Settings → Tank Capacity, or `PUT /api/fuel/settings` with `{"tank_capacity_L": X}`.
+The `tank_capacity_L` default of 10.0 is an estimate. **Measure your actual tank before the race** and update it via Settings → Tank Capacity, or `PUT /api/fuel/settings` with `{"tank_capacity_L": X}`.
 
 ---
 

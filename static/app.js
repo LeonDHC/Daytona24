@@ -586,6 +586,12 @@ const Dashboard = (() => {
         Pedal: ${curr.pedal_pos} → ${next.pedal_pos}
       `;
     }
+    // Pre-fill swap-lap with the next lap (operator can override for catch-up swaps)
+    const currLap = state.current_lap || 0;
+    el('swap-lap').value = currLap + 1;
+    // Pre-fill fuel with full tank (operator can override)
+    const tank = state.fuel && state.fuel.capacity_L;
+    el('swap-fuel').value = tank != null ? tank : '';
     el('modal-swap-overlay').classList.add('open');
   }
 
@@ -659,10 +665,20 @@ const Dashboard = (() => {
   async function submitSwap() {
     const next_driver = el('swap-driver').value;
     const fuel_level = el('swap-fuel').value;
+    const swap_lap = el('swap-lap').value;
     const body = { next_driver };
     if (fuel_level) body.fuel_level_L = parseFloat(fuel_level);
-    await apiPost('/api/stints/end', body);
+    if (swap_lap)   body.swap_lap = parseInt(swap_lap);
+    const result = await apiPost('/api/stints/end', body);
+    if (result && result.detail) {
+      alert(`Swap failed: ${result.detail}`);
+      return;
+    }
+    if (result && result.reassigned_laps > 0) {
+      console.log(`Reassigned ${result.reassigned_laps} laps to ${result.driver}`);
+    }
     el('swap-fuel').value = '';
+    el('swap-lap').value = '';
     closeModal('modal-swap-overlay');
   }
 

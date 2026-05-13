@@ -64,10 +64,10 @@ CREATE TABLE IF NOT EXISTS race_state (
 """
 
 DEFAULT_STATE = {
-    "tank_capacity_L": "5.5",
+    "tank_capacity_L": "10.0",
     "safety_margin_laps": "2",
     "scraper_enabled": "0",
-    "fuel_level_L": "5.5",
+    "fuel_level_L": "10.0",
     "current_lap": "0",
     "race_started": "0",
 }
@@ -226,6 +226,19 @@ async def get_laps(limit: int = 50, source: str = "all") -> list[dict]:
             ) as cur:
                 rows = await cur.fetchall()
     return [dict(r) for r in reversed(rows)]
+
+
+async def reassign_laps_from(from_lap_number: int, new_driver: str, new_stint_id: int) -> int:
+    """Reassign laps with lap_number >= from_lap_number to new driver + stint.
+    Used on driver swap to retroactively retag laps the scraper pulled before
+    the operator recorded the swap. Returns count of rows updated."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "UPDATE laps SET driver_name = ?, stint_id = ? WHERE lap_number >= ?",
+            (new_driver, new_stint_id, from_lap_number),
+        )
+        await db.commit()
+        return cur.rowcount
 
 
 async def delete_lap(lap_id: int) -> bool:

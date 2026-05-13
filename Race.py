@@ -39,8 +39,8 @@ DEFAULT_CONSUMPTION_LPL = 0.35   # litres per lap if no practice data available
 
 @dataclass
 class FuelModel:
-    tank_capacity_L: float = 5.5
-    current_level_L: float = 5.5
+    tank_capacity_L: float = 10.0
+    current_level_L: float = 10.0
     safety_margin_laps: int = 2
     alpha: float = 0.3   # EMA smoothing factor
     _ema: float = field(default=0.0, init=False)

@@ -61,8 +61,8 @@ utc = timezone.utc
 
 async def _load_state_into_memory() -> None:
     state = await db.get_state()
-    _fuel_model.tank_capacity_L = float(state.get("tank_capacity_L", 5.5))
-    _fuel_model.current_level_L = float(state.get("fuel_level_L", 5.5))
+    _fuel_model.tank_capacity_L = float(state.get("tank_capacity_L", 10.0))
+    _fuel_model.current_level_L = float(state.get("fuel_level_L", 10.0))
     _fuel_model.safety_margin_laps = int(state.get("safety_margin_laps", 2))
 
     drivers = await db.get_drivers()
@@ -453,26 +453,50 @@ async def get_stints():
 @app.post("/api/stints/end")
 async def end_stint(body: dict):
     next_driver = body.get("next_driver", "").strip()
-    fuel_level_L = body.get("fuel_level_L")
+    fuel_level_L_raw = body.get("fuel_level_L")
+    swap_lap_raw = body.get("swap_lap")
 
     now = datetime.now(utc)
     state = await db.get_state()
     current_lap = int(state.get("current_lap", 0))
 
+    # Resolve and validate swap_lap (defaults to next lap, must not be in the future)
+    if swap_lap_raw is None or str(swap_lap_raw).strip() == "":
+        swap_lap = current_lap + 1
+    else:
+        try:
+            swap_lap = int(swap_lap_raw)
+        except (ValueError, TypeError):
+            raise HTTPException(400, "swap_lap must be an integer")
+        if swap_lap < 1:
+            raise HTTPException(400, "swap_lap must be >= 1")
+        if swap_lap > current_lap + 1:
+            raise HTTPException(
+                400,
+                f"swap_lap cannot be in the future (current lap is {current_lap}, max allowed is {current_lap + 1})",
+            )
+
+    # Default fuel level to a full tank if not provided
+    if fuel_level_L_raw is None or str(fuel_level_L_raw).strip() == "":
+        new_fuel_level = _fuel_model.tank_capacity_L
+    else:
+        new_fuel_level = float(fuel_level_L_raw)
+
+    # Close prior stint at swap_lap - 1 (the last lap the previous driver completed)
     current = await db.get_current_stint()
     if current:
-        fuel_end = float(fuel_level_L) if fuel_level_L is not None else None
-        await db.end_stint(current["id"], now.isoformat(), fuel_end, current_lap)
+        prior_end_lap = max(current.get("start_lap") or 0, swap_lap - 1)
+        await db.end_stint(current["id"], now.isoformat(), new_fuel_level, prior_end_lap)
 
-        if current.get("fuel_start_L") is not None and fuel_end is not None:
-            laps_in_stint = current_lap - (current.get("start_lap") or 0)
-            litres_used = float(current["fuel_start_L"]) - fuel_end
+        if current.get("fuel_start_L") is not None:
+            laps_in_stint = prior_end_lap - (current.get("start_lap") or 0)
+            litres_used = float(current["fuel_start_L"]) - new_fuel_level
             if laps_in_stint > 0 and litres_used > 0:
                 _fuel_model.update_from_stint(litres_used, laps_in_stint)
 
-    if fuel_level_L is not None:
-        _fuel_model.current_level_L = float(fuel_level_L)
-        await db.set_state("fuel_level_L", str(fuel_level_L))
+    # Reset fuel level to the post-pit value
+    _fuel_model.current_level_L = new_fuel_level
+    await db.set_state("fuel_level_L", str(new_fuel_level))
 
     if not next_driver:
         next_driver = _stint_calc.next_driver()
@@ -485,12 +509,22 @@ async def end_stint(body: dict):
     new_stint_id = await db.start_stint(
         next_driver,
         now.isoformat(),
-        float(fuel_level_L) if fuel_level_L is not None else None,
-        current_lap,
+        new_fuel_level,
+        swap_lap,
     )
 
+    # Retroactively retag any laps the scraper already pulled with the new driver / stint
+    reassigned = await db.reassign_laps_from(swap_lap, next_driver, new_stint_id)
+
     await manager.broadcast({"type": "stint_update", "data": await _full_state()})
-    return {"ok": True, "new_stint_id": new_stint_id, "driver": next_driver}
+    return {
+        "ok": True,
+        "new_stint_id": new_stint_id,
+        "driver": next_driver,
+        "swap_lap": swap_lap,
+        "reassigned_laps": reassigned,
+        "fuel_level_L": new_fuel_level,
+    }
 
 
 # ── API: Fuel ─────────────────────────────────────────────────────────────────
@@ -655,9 +689,14 @@ async def scraper_start(body: dict):
         current_lap = int(state.get("current_lap", 0)) + 1
         await db.set_state("current_lap", str(current_lap))
         current_stint = await db.get_current_stint()
+        # Strategy app is the source of truth for who is driving — the scraper only
+        # sees the team/kart entry on SpeedHive, not the actual person in the seat.
+        actual_driver = _stint_calc.current_driver()
+        if not actual_driver or actual_driver == "—":
+            actual_driver = lap_record.get("driver_name", "unknown")
         lap_id = await db.insert_lap(
             lap_number=lap_record.get("lap_number", current_lap),
-            driver_name=lap_record.get("driver_name", "unknown"),
+            driver_name=actual_driver,
             lap_time_ms=lap_record["lap_time_ms"],
             flag_condition=lap_record.get("flag_condition", "GREEN"),
             is_rain=lap_record.get("is_rain", False),
@@ -665,6 +704,8 @@ async def scraper_start(body: dict):
             recorded_at=now.isoformat(),
             stint_id=current_stint["id"] if current_stint else None,
         )
+        # Reflect the real driver back into the broadcast payload for clients
+        lap_record = {**lap_record, "driver_name": actual_driver}
         flag = lap_record.get("flag_condition", "GREEN")
         _lap_model.update(lap_record["lap_time_ms"], flag)
 
