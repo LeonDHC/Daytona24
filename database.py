@@ -245,6 +245,29 @@ async def get_lap_stats() -> dict:
     return dict(row) if row else {"cnt": 0, "fastest": None, "avg_ms": None}
 
 
+async def get_driver_stats(driver_name: str) -> dict:
+    """Cumulative stats for a single driver across all stints."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT COUNT(*) AS total_laps,
+                      AVG(CASE WHEN flag_condition='GREEN' THEN lap_time_ms END) AS avg_green_ms
+               FROM laps WHERE driver_name = ?""",
+            (driver_name,),
+        ) as cur:
+            lap_row = await cur.fetchone()
+        async with db.execute(
+            "SELECT started_at, ended_at FROM stints WHERE driver_name = ?",
+            (driver_name,),
+        ) as cur:
+            stint_rows = await cur.fetchall()
+    return {
+        "total_laps": int(lap_row["total_laps"] or 0),
+        "avg_lap_ms": int(lap_row["avg_green_ms"]) if lap_row["avg_green_ms"] else None,
+        "stint_durations": [(r["started_at"], r["ended_at"]) for r in stint_rows],
+    }
+
+
 async def start_stint(driver_name: str, started_at: str, fuel_start_L: float | None, start_lap: int) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(

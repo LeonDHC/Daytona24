@@ -49,6 +49,7 @@ const Dashboard = (() => {
       case 'race_started': document.getElementById('start-btn').textContent = 'Race Running'; break;
       case 'alerts':       renderAlerts(msg.data); break;
       case 'standings_update': updateStandings(msg.data); break;
+      case 'current_driver_update': renderCurrentDriverPanel(msg.data); break;
     }
   }
 
@@ -63,16 +64,7 @@ const Dashboard = (() => {
 
     // Current driver
     const curr = data.current_driver || {};
-    el('curr-name').textContent = capitalize(curr.name || '—');
-    el('curr-ballast').textContent = curr.ballast_kg != null ? `${curr.ballast_kg.toFixed(1)} kg` : '—';
-    el('curr-pedal').textContent = curr.pedal_pos || '—';
-    el('curr-weight').textContent = curr.weight_kg != null ? `${curr.weight_kg} kg` : '—';
-
-    // Stint timer
-    if (curr.stint_elapsed_s != null) {
-      stintStartTime = Date.now() - curr.stint_elapsed_s * 1000;
-      startStintTimer(curr.stint_elapsed_s);
-    }
+    renderCurrentDriverPanel(curr);
 
     // Next driver
     const next = data.next_driver || {};
@@ -125,6 +117,36 @@ const Dashboard = (() => {
 
     // Standings (position + gaps)
     updateStandings(data.standings || {});
+  }
+
+  // ── Current Driver Panel ───────────────────────────────────────────────────
+  function renderCurrentDriverPanel(curr) {
+    if (!curr) curr = {};
+    el('curr-name').textContent = capitalize(curr.name || '—');
+    el('curr-ballast').textContent = curr.ballast_kg != null ? `${curr.ballast_kg.toFixed(1)} kg` : '—';
+    el('curr-pedal').textContent = curr.pedal_pos || '—';
+    el('curr-weight').textContent = curr.weight_kg != null ? `${curr.weight_kg} kg` : '—';
+
+    if (curr.stint_elapsed_s != null) {
+      stintStartTime = Date.now() - curr.stint_elapsed_s * 1000;
+      startStintTimer(curr.stint_elapsed_s);
+    }
+
+    if (curr.stint_started_at && curr.stint_start_lap != null) {
+      const t = new Date(curr.stint_started_at).toLocaleTimeString('en-GB', {
+        hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London',
+      });
+      el('curr-stint-started').textContent = `Lap ${curr.stint_start_lap} · ${t} BST`;
+    } else {
+      el('curr-stint-started').textContent = '—';
+    }
+    el('curr-laps-in-kart').textContent = curr.laps_in_kart != null ? curr.laps_in_kart : '—';
+    el('curr-avg-lap').textContent = curr.avg_lap_formatted || '—';
+    el('curr-total-time').textContent = curr.total_time_in_kart_s != null ? fmtDuration(curr.total_time_in_kart_s) : '—';
+    el('curr-total-laps').textContent = curr.total_laps_raced != null ? curr.total_laps_raced : '—';
+
+    // Keep state.current_driver fresh so dependent flows (lap modal, stint timer) stay consistent
+    if (state) state.current_driver = curr;
   }
 
   // ── Standings ──────────────────────────────────────────────────────────────
@@ -524,19 +546,28 @@ const Dashboard = (() => {
 
   // ── Driver Selects ─────────────────────────────────────────────────────────
   function populateDriverSelects(drivers) {
+    const currName = state.current_driver && state.current_driver.name;
+    const lapModalOpen = el('modal-lap-overlay').classList.contains('open');
     ['lap-driver', 'swap-driver', 'prac-driver'].forEach(id => {
       const sel = el(id);
       if (!sel) return;
-      const current = sel.value;
+      const previous = sel.value;
       sel.innerHTML = drivers.map(d =>
         `<option value="${d.name}">${capitalize(d.name)}</option>`
       ).join('');
-      if (current) sel.value = current;
+      // lap-driver always tracks the current driver — unless user is mid-edit in the open modal
+      if (id === 'lap-driver' && currName && !lapModalOpen) {
+        sel.value = currName;
+      } else if (previous) {
+        sel.value = previous;
+      }
     });
   }
 
   // ── Modals ─────────────────────────────────────────────────────────────────
   function openLapModal() {
+    const curr = state.current_driver && state.current_driver.name;
+    if (curr) el('lap-driver').value = curr;
     el('modal-lap-overlay').classList.add('open');
     el('lap-time').focus();
   }

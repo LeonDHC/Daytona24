@@ -27,6 +27,7 @@ from Race import (
     format_duration,
     format_lap_time,
     parse_lap_time,
+    FLAG_MULTIPLIERS,
     RACE_END,
     RACE_START,
 )
@@ -82,6 +83,16 @@ async def _load_state_into_memory() -> None:
         _stint_calc.current_index = _stint_calc.drivers.index(current)
 
 
+async def _broadcast_current_driver():
+    """Send only the current_driver block — used after lap inserts so the
+    panel-current totals refresh without rebuilding the laps table / chart."""
+    full = await _full_state()
+    await manager.broadcast({
+        "type": "current_driver_update",
+        "data": full["data"]["current_driver"],
+    })
+
+
 async def _full_state() -> dict:
     now = datetime.now(utc)
     state = await db.get_state()
@@ -106,6 +117,32 @@ async def _full_state() -> dict:
         except ValueError:
             pass
 
+    # Per-driver cumulative stats
+    driver_stats = (
+        await db.get_driver_stats(curr_name)
+        if curr_name and curr_name != "—"
+        else {"total_laps": 0, "avg_lap_ms": None, "stint_durations": []}
+    )
+    total_kart_s = 0
+    for started, ended in driver_stats["stint_durations"]:
+        if ended:
+            try:
+                t0 = datetime.fromisoformat(started).replace(tzinfo=utc)
+                t1 = datetime.fromisoformat(ended).replace(tzinfo=utc)
+                total_kart_s += int((t1 - t0).total_seconds())
+            except ValueError:
+                pass
+    total_kart_s += stint_elapsed_s
+
+    current_lap_n = int(state.get("current_lap", 0))
+    laps_in_kart = 0
+    stint_start_lap = None
+    stint_started_at = None
+    if current_stint:
+        stint_started_at = current_stint.get("started_at")
+        stint_start_lap = current_stint.get("start_lap") or 0
+        laps_in_kart = max(0, current_lap_n - stint_start_lap)
+
     time_remaining_s = max(0, (RACE_END - now).total_seconds())
     race_started = state.get("race_started", "0") == "1"
 
@@ -121,6 +158,13 @@ async def _full_state() -> dict:
                 "pedal_pos": curr_driver.get("pedal_pos", "3"),
                 "ballast_kg": ballast_required(curr_driver.get("weight_kg", 85)),
                 "stint_elapsed_s": stint_elapsed_s,
+                "stint_started_at": stint_started_at,
+                "stint_start_lap": stint_start_lap,
+                "laps_in_kart": laps_in_kart,
+                "total_laps_raced": driver_stats["total_laps"],
+                "avg_lap_ms": driver_stats["avg_lap_ms"],
+                "avg_lap_formatted": format_lap_time(driver_stats["avg_lap_ms"]) if driver_stats["avg_lap_ms"] else None,
+                "total_time_in_kart_s": total_kart_s,
             },
             "next_driver": {
                 "name": next_name,
@@ -348,6 +392,11 @@ async def add_lap(body: dict):
 
     _lap_model.update(lap_time_ms, flag)
 
+    # Burn fuel for this lap
+    burn = _fuel_model.avg_consumption_Lpl * FLAG_MULTIPLIERS.get(flag, 1.0)
+    _fuel_model.current_level_L = max(0.0, _fuel_model.current_level_L - burn)
+    await db.set_state("fuel_level_L", str(_fuel_model.current_level_L))
+
     lap_record = {
         "id": lap_id,
         "lap_number": current_lap,
@@ -365,13 +414,17 @@ async def add_lap(body: dict):
     await manager.broadcast({
         "type": "fuel_update",
         "data": {
+            "level_L": round(_fuel_model.current_level_L, 2),
+            "percent": round(_fuel_model.fuel_percent(), 1),
             "laps_to_empty": round(_fuel_model.laps_to_empty(), 1),
             "laps_until_pit": round(_fuel_model.laps_until_pit(), 1),
             "time_to_pit_s": int(_fuel_model.time_to_pit_seconds(_lap_model.avg_lap_s)),
-            "percent": round(_fuel_model.fuel_percent(), 1),
             "avg_consumption_Lpl": round(_fuel_model.avg_consumption_Lpl, 3),
         },
     })
+
+    # Refresh panel-current totals (laps in kart, total laps, avg lap, time in kart)
+    await _broadcast_current_driver()
 
     return lap_record
 
@@ -612,7 +665,13 @@ async def scraper_start(body: dict):
             recorded_at=now.isoformat(),
             stint_id=current_stint["id"] if current_stint else None,
         )
-        _lap_model.update(lap_record["lap_time_ms"], lap_record.get("flag_condition", "GREEN"))
+        flag = lap_record.get("flag_condition", "GREEN")
+        _lap_model.update(lap_record["lap_time_ms"], flag)
+
+        burn = _fuel_model.avg_consumption_Lpl * FLAG_MULTIPLIERS.get(flag, 1.0)
+        _fuel_model.current_level_L = max(0.0, _fuel_model.current_level_L - burn)
+        await db.set_state("fuel_level_L", str(_fuel_model.current_level_L))
+
         _scraper_status["last_poll"] = now.isoformat()
         await manager.broadcast({
             "type": "lap_update",
@@ -623,6 +682,18 @@ async def scraper_start(body: dict):
                 "source": "speedhive",
             },
         })
+        await manager.broadcast({
+            "type": "fuel_update",
+            "data": {
+                "level_L": round(_fuel_model.current_level_L, 2),
+                "percent": round(_fuel_model.fuel_percent(), 1),
+                "laps_to_empty": round(_fuel_model.laps_to_empty(), 1),
+                "laps_until_pit": round(_fuel_model.laps_until_pit(), 1),
+                "time_to_pit_s": int(_fuel_model.time_to_pit_seconds(_lap_model.avg_lap_s)),
+                "avg_consumption_Lpl": round(_fuel_model.avg_consumption_Lpl, 3),
+            },
+        })
+        await _broadcast_current_driver()
 
     scraper.on_new_lap = on_new_lap
 
