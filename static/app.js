@@ -48,6 +48,7 @@ const Dashboard = (() => {
       case 'rotation_update': updateRotationList(msg.data.rotation); break;
       case 'race_started': document.getElementById('start-btn').textContent = 'Race Running'; break;
       case 'alerts':       renderAlerts(msg.data); break;
+      case 'standings_update': updateStandings(msg.data); break;
     }
   }
 
@@ -121,6 +122,58 @@ const Dashboard = (() => {
 
     // Scraper
     if (data.scraper) updateScraperStatus(data.scraper);
+
+    // Standings (position + gaps)
+    updateStandings(data.standings || {});
+  }
+
+  // ── Standings ──────────────────────────────────────────────────────────────
+  function updateStandings(s) {
+    const posEl = el('hdr-position');
+    const aheadEl = el('hdr-gap-ahead');
+    const behindEl = el('hdr-gap-behind');
+
+    const pos = s && s.position;
+    posEl.textContent = pos != null ? `P${pos}` : '—';
+    posEl.className = 'hdr-pos' + (
+      pos == null ? '' :
+      pos <= 3 ? ' podium' :
+      pos <= 5 ? ' top5' :
+      pos > 10 ? ' drop' : ''
+    );
+
+    aheadEl.textContent = s && s.gap_ahead ? s.gap_ahead : '—';
+    behindEl.textContent = s && s.gap_behind ? s.gap_behind : '—';
+    aheadEl.className = gapColorClass(s && s.gap_ahead);
+    behindEl.className = gapColorClass(s && s.gap_behind);
+  }
+
+  function gapColorClass(gap) {
+    if (!gap || gap === '—') return '';
+    if (/L$/i.test(gap)) return 'gap-lap';
+    const v = Math.abs(parseFloat(gap.replace('+', '')));
+    if (isNaN(v)) return '';
+    if (v < 1.0) return 'gap-close';
+    if (v < 3.0) return 'gap-mid';
+    return 'gap-safe';
+  }
+
+  function openStandingsModal() {
+    const s = (state && state.standings) || {};
+    el('stand-pos').value = s.position || '';
+    el('stand-ahead').value = s.gap_ahead || '';
+    el('stand-behind').value = s.gap_behind || '';
+    el('modal-standings-overlay').classList.add('open');
+  }
+
+  async function submitStandings() {
+    const body = {
+      position: el('stand-pos').value || null,
+      gap_ahead: el('stand-ahead').value || null,
+      gap_behind: el('stand-behind').value || null,
+    };
+    await apiPost('/api/standings', body);
+    closeModal('modal-standings-overlay');
   }
 
   // ── Fuel Panel ─────────────────────────────────────────────────────────────
@@ -689,6 +742,7 @@ const Dashboard = (() => {
   return {
     openLapModal, openSwapModal, openFuelModal, openPracticeModal,
     openScraperPanel, openSettings, closeModal, closeSettings,
+    openStandingsModal, submitStandings,
     submitLap, submitSwap, submitFuelFill, submitPractice,
     startRace, startScraper, stopScraper,
     dismissAlert, markMaintenanceDone,

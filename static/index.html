@@ -17,8 +17,12 @@
   <div class="header-clock" id="clock">--:--:--</div>
   <div class="header-race-info">
     <span>Lap: <strong id="hdr-lap">—</strong></span>
+    <span>Pos: <strong id="hdr-position" class="hdr-pos">—</strong></span>
+    <span class="hdr-gap">▲ <strong id="hdr-gap-ahead">—</strong></span>
+    <span class="hdr-gap">▼ <strong id="hdr-gap-behind">—</strong></span>
     <span>Remaining: <strong id="hdr-remaining">—</strong></span>
     <span><span class="scraper-dot" id="scraper-dot"></span><span id="scraper-label">Scraper off</span></span>
+    <button class="btn" onclick="Dashboard.openStandingsModal()" title="Manual standings entry">⇆</button>
   </div>
   <div class="header-actions">
     <button class="btn" onclick="Dashboard.openLapModal()">+ Lap</button>
@@ -330,6 +334,29 @@
       <button class="btn" onclick="Dashboard.closeModal('scraper-panel-overlay')">Close</button>
       <button class="btn danger" onclick="Dashboard.stopScraper()">Stop</button>
       <button class="btn primary" onclick="Dashboard.startScraper()">Start Scraper</button>
+    </div>
+  </div>
+</div>
+
+<!-- Standings Manual Entry Modal -->
+<div class="modal-overlay" id="modal-standings-overlay" onclick="Dashboard.closeModal('modal-standings-overlay')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>Update Standings (manual)</h2>
+    <div class="form-group">
+      <label>Position</label>
+      <input type="number" id="stand-pos" min="1" max="200" placeholder="4">
+    </div>
+    <div class="form-group">
+      <label>Gap Ahead (e.g. +0.523 or +1L)</label>
+      <input type="text" id="stand-ahead" placeholder="+0.523">
+    </div>
+    <div class="form-group">
+      <label>Gap Behind</label>
+      <input type="text" id="stand-behind" placeholder="+1.245">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="Dashboard.closeModal('modal-standings-overlay')">Cancel</button>
+      <button class="btn primary" onclick="Dashboard.submitStandings()">Update</button>
     </div>
   </div>
 </div>

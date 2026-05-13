@@ -51,6 +51,38 @@ def _parse_lap_time_str(s: str) -> int | None:
         return None
 
 
+_GAP_LAPS_RE = re.compile(r"^\+?\s*(\d+)\s*L", re.IGNORECASE)
+_LEADER_TOKENS = {"", "-", "--", "—", "leader", "interval", "gap"}
+
+
+def _parse_gap_cell(s: str) -> tuple[float | None, int | None]:
+    """Parse a SpeedHive gap cell.
+    Returns (seconds, laps_down). Either may be None.
+    "Leader"/"—"/"" → (0.0, 0); "+0.523" → (0.523, 0); "+1L" → (None, 1).
+    """
+    s = (s or "").strip()
+    if s.lower() in _LEADER_TOKENS:
+        return 0.0, 0
+    m = _GAP_LAPS_RE.match(s)
+    if m:
+        return None, int(m.group(1))
+    cleaned = s.lstrip("+").strip()
+    try:
+        return float(cleaned), 0
+    except ValueError:
+        return None, None
+
+
+def _format_gap(seconds: float | None, laps_down: int | None) -> str:
+    if laps_down is not None and laps_down > 0:
+        return f"+{laps_down}L"
+    if seconds is None:
+        return "—"
+    if abs(seconds) < 0.0005:
+        return "0.000"
+    return f"{seconds:+.3f}"
+
+
 class SpeedHiveScraper:
     def __init__(
         self,
@@ -66,7 +98,9 @@ class SpeedHiveScraper:
         self._use_playwright = False   # flipped to True if httpx fails
         self._pw_browser = None
         self._pw_page = None
+        self._last_standings: dict | None = None
         self.on_new_lap: Callable[[dict], Awaitable[None]] | None = None
+        self.on_standings_update: Callable[[dict], Awaitable[None]] | None = None
 
     async def _try_api(self) -> list[dict] | None:
         if not self._session_url:
@@ -197,6 +231,126 @@ class SpeedHiveScraper:
                 })
         return results
 
+    async def _scrape_standings_rows(self) -> list[list[str]]:
+        """Pull every table-row-like element on the page (no extra reload)."""
+        if not self._pw_page:
+            return []
+        try:
+            return await self._pw_page.evaluate("""
+                () => {
+                    const out = [];
+                    const trs = document.querySelectorAll(
+                        'table tr, [class*="standings"] [class*="row"], [class*="classification"] [class*="row"]'
+                    );
+                    trs.forEach(tr => {
+                        const cells = Array.from(tr.querySelectorAll('td, [class*="cell"]'));
+                        if (cells.length >= 3) {
+                            out.push(cells.map(c => c.innerText.trim()));
+                        }
+                    });
+                    return out;
+                }
+            """)
+        except Exception as e:
+            log.debug(f"Standings DOM extract failed: {e}")
+            return []
+
+    def _parse_standings_rows(self, rows: list[list[str]]) -> dict | None:
+        """Find our row by team_number, compute gap to row ahead and behind.
+        Uses SpeedHive's gap-to-leader column; ahead/behind gaps are differences.
+        """
+        if not self._team_number:
+            return None
+
+        parsed: list[dict] = []
+        for cells in rows:
+            position = None
+            for c in cells[:3]:
+                try:
+                    n = int(c.strip())
+                    if 0 < n < 200:
+                        position = n
+                        break
+                except ValueError:
+                    pass
+            if position is None:
+                continue
+
+            gap_s, laps_down = None, None
+            for c in cells:
+                cs = c.strip()
+                if not cs:
+                    continue
+                if cs.lower() in _LEADER_TOKENS:
+                    gap_s, laps_down = 0.0, 0
+                    break
+                if cs.startswith("+") or _GAP_LAPS_RE.match(cs):
+                    g, l = _parse_gap_cell(cs)
+                    if g is not None or l is not None:
+                        gap_s, laps_down = g, l
+                        break
+
+            is_us = any(c.strip() == str(self._team_number) for c in cells)
+            parsed.append({
+                "position": position,
+                "gap_to_leader_s": gap_s,
+                "laps_down": laps_down or 0,
+                "is_us": is_us,
+            })
+
+        if not parsed:
+            return None
+
+        # Dedupe identical positions (DOM may pick up the same row via two selectors)
+        seen_positions: dict[int, dict] = {}
+        for row in parsed:
+            existing = seen_positions.get(row["position"])
+            if existing is None or (existing["gap_to_leader_s"] is None and row["gap_to_leader_s"] is not None):
+                seen_positions[row["position"]] = row
+            if row["is_us"]:
+                seen_positions[row["position"]]["is_us"] = True
+        parsed = sorted(seen_positions.values(), key=lambda r: r["position"])
+
+        our_idx = next((i for i, r in enumerate(parsed) if r["is_us"]), None)
+        if our_idx is None:
+            return None
+
+        us = parsed[our_idx]
+        ahead = parsed[our_idx - 1] if our_idx > 0 else None
+        behind = parsed[our_idx + 1] if our_idx + 1 < len(parsed) else None
+
+        def gap_between(leader: dict, follower: dict) -> tuple[float | None, int]:
+            lap_diff = (follower["laps_down"] or 0) - (leader["laps_down"] or 0)
+            if lap_diff > 0:
+                return None, lap_diff
+            if leader["gap_to_leader_s"] is None or follower["gap_to_leader_s"] is None:
+                return None, 0
+            return follower["gap_to_leader_s"] - leader["gap_to_leader_s"], 0
+
+        if ahead:
+            ah_s, ah_l = gap_between(ahead, us)
+            gap_ahead = _format_gap(ah_s, ah_l)
+        else:
+            gap_ahead = "—"
+
+        if behind:
+            be_s, be_l = gap_between(us, behind)
+            gap_behind = _format_gap(be_s, be_l)
+        else:
+            gap_behind = "—"
+
+        return {
+            "position": us["position"],
+            "gap_ahead": gap_ahead,
+            "gap_behind": gap_behind,
+        }
+
+    async def poll_standings(self) -> dict | None:
+        if not self._team_number or not self._pw_page:
+            return None
+        rows = await self._scrape_standings_rows()
+        return self._parse_standings_rows(rows)
+
     async def poll_once(self) -> list[dict]:
         laps = await self._try_api()
         if laps is None:
@@ -219,6 +373,14 @@ class SpeedHiveScraper:
                     if self.on_new_lap:
                         await self.on_new_lap(lap)
                     self._last_lap_seen = max(self._last_lap_seen, lap["lap_number"])
+
+                # Standings — only meaningful once Playwright is up and we have a kart number
+                if self._team_number and self._pw_page:
+                    standings = await self.poll_standings()
+                    if standings and standings != self._last_standings:
+                        self._last_standings = standings
+                        if self.on_standings_update:
+                            await self.on_standings_update(standings)
             except asyncio.CancelledError:
                 break
             except Exception as e:

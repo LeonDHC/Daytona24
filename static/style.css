@@ -294,7 +294,8 @@ tbody td {
 
 /* ── Chart panel ───────────────────────────────────────────────────────────── */
 
-#panel-chart canvas { flex: 1; }
+#panel-chart { padding-bottom: 20px; }
+#panel-chart canvas { flex: 1; min-height: 0; }
 
 /* ── Rotation panel ────────────────────────────────────────────────────────── */
 
@@ -427,7 +428,25 @@ tbody td {
   color: var(--text-muted);
   display: flex;
   gap: 16px;
+  align-items: center;
 }
+
+.hdr-pos {
+  font-size: 14px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: #334155;
+  color: var(--text);
+}
+.hdr-pos.podium { background: #166534; color: #bbf7d0; }
+.hdr-pos.top5   { background: #78350f; color: #fde68a; }
+.hdr-pos.drop   { background: #7f1d1d; color: #fecaca; }
+
+.hdr-gap { font-variant-numeric: tabular-nums; }
+.hdr-gap .gap-close  { color: var(--red); }   /* threat */
+.hdr-gap .gap-mid    { color: var(--yellow); }
+.hdr-gap .gap-safe   { color: var(--green); }
+.hdr-gap .gap-lap    { color: var(--text-muted); }
 
 .btn {
   padding: 5px 12px;

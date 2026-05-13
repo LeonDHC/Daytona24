@@ -161,6 +161,11 @@ async def _full_state() -> dict:
             ],
             "scraper": _scraper_status,
             "current_lap": int(state.get("current_lap", 0)),
+            "standings": {
+                "position": int(state["position"]) if state.get("position", "").strip().isdigit() else None,
+                "gap_ahead": state.get("gap_ahead") or None,
+                "gap_behind": state.get("gap_behind") or None,
+            },
         },
     }
 
@@ -621,6 +626,16 @@ async def scraper_start(body: dict):
 
     scraper.on_new_lap = on_new_lap
 
+    async def on_standings_update(standings: dict):
+        await db.set_state_many({
+            "position": str(standings.get("position", "")),
+            "gap_ahead": str(standings.get("gap_ahead", "")),
+            "gap_behind": str(standings.get("gap_behind", "")),
+        })
+        await manager.broadcast({"type": "standings_update", "data": standings})
+
+    scraper.on_standings_update = on_standings_update
+
     async def run():
         _scraper_status["running"] = True
         try:
@@ -633,6 +648,37 @@ async def scraper_start(body: dict):
 
     _scraper_task = asyncio.create_task(run())
     return {"ok": True}
+
+
+@app.post("/api/standings")
+async def update_standings(body: dict):
+    """Manual override for position / gap_ahead / gap_behind (pit-board entry)."""
+    position = body.get("position")
+    gap_ahead = body.get("gap_ahead")
+    gap_behind = body.get("gap_behind")
+
+    updates: dict[str, str] = {}
+    if position is not None and str(position).strip():
+        try:
+            updates["position"] = str(int(position))
+        except ValueError:
+            raise HTTPException(400, "position must be an integer")
+    if gap_ahead is not None:
+        updates["gap_ahead"] = str(gap_ahead).strip()
+    if gap_behind is not None:
+        updates["gap_behind"] = str(gap_behind).strip()
+
+    if not updates:
+        raise HTTPException(400, "no fields to update")
+
+    await db.set_state_many(updates)
+    standings = {
+        "position": int(updates["position"]) if "position" in updates else None,
+        "gap_ahead": updates.get("gap_ahead"),
+        "gap_behind": updates.get("gap_behind"),
+    }
+    await manager.broadcast({"type": "standings_update", "data": standings})
+    return {"ok": True, **standings}
 
 
 @app.post("/api/scraper/stop")
