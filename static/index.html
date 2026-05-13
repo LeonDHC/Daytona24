@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Daytona 24 — Race Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ── Visor / Maintenance alert banner ──────────────────────────────────── -->
+<div id="alert-banner"></div>
+
+<!-- ── Header ─────────────────────────────────────────────────────────────── -->
+<div id="header">
+  <h1>⚡ Daytona 24</h1>
+  <div class="header-clock" id="clock">--:--:--</div>
+  <div class="header-race-info">
+    <span>Lap: <strong id="hdr-lap">—</strong></span>
+    <span>Remaining: <strong id="hdr-remaining">—</strong></span>
+    <span><span class="scraper-dot" id="scraper-dot"></span><span id="scraper-label">Scraper off</span></span>
+  </div>
+  <div class="header-actions">
+    <button class="btn" onclick="Dashboard.openLapModal()">+ Lap</button>
+    <button class="btn" onclick="Dashboard.openSwapModal()">Driver Swap</button>
+    <button class="btn" onclick="Dashboard.openFuelModal()">Fuel Fill</button>
+    <button class="btn" onclick="Dashboard.openPracticeModal()">Practice</button>
+    <button class="btn" onclick="Dashboard.openScraperPanel()">Scraper</button>
+    <button class="btn" onclick="Dashboard.openSettings()">⚙ Settings</button>
+    <button class="btn primary" id="start-btn" onclick="Dashboard.startRace()">Start Race</button>
+  </div>
+</div>
+
+<!-- ── Main grid ───────────────────────────────────────────────────────────── -->
+<div id="grid">
+
+  <!-- Current Driver -->
+  <div class="panel" id="panel-current">
+    <div class="panel-title">In Kart Now</div>
+    <div class="driver-name current" id="curr-name">—</div>
+    <div class="stint-timer" id="curr-timer">00:00:00</div>
+    <div class="driver-detail">
+      <div class="detail-row">
+        <span class="detail-label">Ballast</span>
+        <span class="detail-value" id="curr-ballast">—</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Pedal pos</span>
+        <span class="detail-value" id="curr-pedal">—</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Weight</span>
+        <span class="detail-value" id="curr-weight">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Next Driver -->
+  <div class="panel" id="panel-next">
+    <div class="panel-title">Up Next</div>
+    <div class="driver-name next" id="next-name">—</div>
+    <div class="driver-detail">
+      <div class="detail-row">
+        <span class="detail-label">Ballast change</span>
+        <span class="detail-value" id="next-ballast-delta">—</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Ballast required</span>
+        <span class="detail-value" id="next-ballast">—</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Pedal pos</span>
+        <span class="detail-value" id="next-pedal">—</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Weight</span>
+        <span class="detail-value" id="next-weight">—</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Swap in (laps)</span>
+        <span class="detail-value" id="swap-laps">—</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Swap in (time)</span>
+        <span class="detail-value" id="swap-time">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fuel -->
+  <div class="panel" id="panel-fuel">
+    <div class="panel-title">Fuel</div>
+    <div class="fuel-row">
+      <div class="fuel-gauge-wrap">
+        <div class="fuel-gauge-fill" id="fuel-gauge-fill" style="height:100%"></div>
+      </div>
+      <div class="fuel-stats">
+        <div class="fuel-big" id="fuel-laps">—</div>
+        <div class="fuel-sub">laps to pit</div>
+        <div class="detail-row" style="margin-top:6px">
+          <span class="detail-label">Level</span>
+          <span class="detail-value" id="fuel-level">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Time to pit</span>
+          <span class="detail-value" id="fuel-time">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Consumption</span>
+          <span class="detail-value" id="fuel-consumption">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Stops left</span>
+          <span class="detail-value" id="fuel-stops">—</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Avg lap</span>
+          <span class="detail-value" id="fuel-avg-lap">—</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Alerts -->
+  <div class="panel" id="panel-alerts">
+    <div class="panel-title">Alerts</div>
+    <div id="alerts-list" style="display:flex;flex-direction:column;gap:6px;overflow-y:auto;flex:1;">
+      <div class="text-muted" style="font-size:13px">No active alerts</div>
+    </div>
+  </div>
+
+  <!-- Laps Table -->
+  <div class="panel" id="panel-laps">
+    <div class="panel-title" style="display:flex;justify-content:space-between">
+      <span>Recent Laps</span>
+      <span class="text-muted" id="lap-stats-summary"></span>
+    </div>
+    <div class="laps-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Driver</th>
+            <th>Time</th>
+            <th>Flag</th>
+            <th>Rain</th>
+            <th>Src</th>
+          </tr>
+        </thead>
+        <tbody id="laps-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Chart -->
+  <div class="panel" id="panel-chart">
+    <div class="panel-title">Lap Times</div>
+    <canvas id="lapTimeChart"></canvas>
+  </div>
+
+  <!-- Driver Rotation -->
+  <div class="panel" id="panel-rotation">
+    <div class="panel-title">Driver Rotation (drag to reorder)</div>
+    <ul class="rotation-list" id="rotation-list"></ul>
+  </div>
+
+  <!-- Maintenance Stops -->
+  <div class="panel" id="panel-maint">
+    <div class="panel-title">Maintenance Stops (DMAX)</div>
+    <div style="display:flex;gap:8px;flex:1">
+      <div class="maint-stop" id="maint-1">
+        <div class="maint-label">Stop 1</div>
+        <div class="maint-time">21:00 BST</div>
+        <div class="maint-countdown" id="maint-1-countdown">—</div>
+      </div>
+      <div class="maint-stop" id="maint-2">
+        <div class="maint-label">Stop 2</div>
+        <div class="maint-time">06:00 BST</div>
+        <div class="maint-countdown" id="maint-2-countdown">—</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:4px">
+      <button class="btn" onclick="Dashboard.markMaintenanceDone('maint1')" style="flex:1">✓ Stop 1 Done</button>
+      <button class="btn" onclick="Dashboard.markMaintenanceDone('maint2')" style="flex:1">✓ Stop 2 Done</button>
+    </div>
+  </div>
+
+  <!-- Rain Radar -->
+  <div class="panel" id="panel-radar">
+    <iframe
+      src="https://embed.windy.com/embed2.html?lat=52.04&lon=-0.76&detailLat=52.04&detailLon=-0.76&width=650&height=450&zoom=9&level=surface&overlay=rain&product=ecmwf&menu=&message=true&marker=&calendar=now&pressure=&type=map&location=coordinates&detail=&metricWind=km%2Fh&metricTemp=%C2%B0C&radarRange=-1"
+      title="Rain Radar - Milton Keynes"
+      allowfullscreen>
+    </iframe>
+  </div>
+
+</div><!-- end #grid -->
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+<!-- Modals                                                                    -->
+<!-- ══════════════════════════════════════════════════════════════════════════ -->
+
+<!-- Lap Entry Modal -->
+<div class="modal-overlay" id="modal-lap-overlay" onclick="Dashboard.closeModal('modal-lap-overlay')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>Add Lap</h2>
+    <div class="form-group">
+      <label>Driver</label>
+      <select id="lap-driver"></select>
+    </div>
+    <div class="form-group">
+      <label>Lap Time (m:ss.xxx)</label>
+      <input type="text" id="lap-time" placeholder="0:55.123" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label>Flag Condition</label>
+      <select id="lap-flag">
+        <option value="GREEN">Green</option>
+        <option value="YELLOW">Yellow</option>
+        <option value="SC">Safety Car</option>
+        <option value="RED">Red Flag</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label><input type="checkbox" id="lap-rain"> Raining</label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="Dashboard.closeModal('modal-lap-overlay')">Cancel</button>
+      <button class="btn primary" onclick="Dashboard.submitLap()">Add Lap</button>
+    </div>
+  </div>
+</div>
+
+<!-- Driver Swap Modal -->
+<div class="modal-overlay" id="modal-swap-overlay" onclick="Dashboard.closeModal('modal-swap-overlay')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>Driver Swap / Pit Stop</h2>
+    <div class="form-group">
+      <label>Incoming Driver</label>
+      <select id="swap-driver"></select>
+    </div>
+    <div class="form-group">
+      <label>Fuel Level After Refuel (litres)</label>
+      <input type="number" id="swap-fuel" step="0.1" min="0" max="6" placeholder="5.5">
+    </div>
+    <div style="padding:8px;background:#0f172a;border-radius:6px;font-size:13px" id="swap-preview"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="Dashboard.closeModal('modal-swap-overlay')">Cancel</button>
+      <button class="btn primary" onclick="Dashboard.submitSwap()">Confirm Swap</button>
+    </div>
+  </div>
+</div>
+
+<!-- Fuel Fill Modal -->
+<div class="modal-overlay" id="modal-fuel-overlay" onclick="Dashboard.closeModal('modal-fuel-overlay')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>Record Fuel Fill</h2>
+    <div class="form-group">
+      <label>Litres Added</label>
+      <input type="number" id="fill-litres" step="0.1" min="0" max="6" placeholder="3.5">
+    </div>
+    <div class="form-group">
+      <label>Total Fuel Level After Fill (litres, optional)</label>
+      <input type="number" id="fill-total" step="0.1" min="0" max="6" placeholder="5.5">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="Dashboard.closeModal('modal-fuel-overlay')">Cancel</button>
+      <button class="btn primary" onclick="Dashboard.submitFuelFill()">Record</button>
+    </div>
+  </div>
+</div>
+
+<!-- Practice Session Modal -->
+<div class="modal-overlay" id="modal-practice-overlay" onclick="Dashboard.closeModal('modal-practice-overlay')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>Add Practice Session</h2>
+    <div class="form-group">
+      <label>Driver</label>
+      <select id="prac-driver"></select>
+    </div>
+    <div class="form-group">
+      <label>Fuel Start (litres)</label>
+      <input type="number" id="prac-fuel-start" step="0.1" min="0" max="6" placeholder="5.5">
+    </div>
+    <div class="form-group">
+      <label>Fuel End (litres)</label>
+      <input type="number" id="prac-fuel-end" step="0.1" min="0" max="6" placeholder="2.1">
+    </div>
+    <div class="form-group">
+      <label>Laps Completed</label>
+      <input type="number" id="prac-laps" min="1" placeholder="20">
+    </div>
+    <div class="form-group">
+      <label>Avg Lap Time (m:ss.xxx, optional)</label>
+      <input type="text" id="prac-avg-lap" placeholder="0:55.000">
+    </div>
+    <div class="form-group">
+      <label>Condition</label>
+      <select id="prac-flag">
+        <option value="GREEN">Green (dry)</option>
+        <option value="YELLOW">Simulated yellow / rain</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Notes</label>
+      <input type="text" id="prac-notes" placeholder="e.g. Simulated SC laps">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="Dashboard.closeModal('modal-practice-overlay')">Cancel</button>
+      <button class="btn primary" onclick="Dashboard.submitPractice()">Save Session</button>
+    </div>
+  </div>
+</div>
+
+<!-- Scraper Panel -->
+<div class="modal-overlay" id="scraper-panel-overlay" onclick="Dashboard.closeModal('scraper-panel-overlay')">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:500px">
+    <h2>SpeedHive Scraper</h2>
+    <div class="form-group">
+      <label>Session URL (from speedhive.mylaps.com/livetiming)</label>
+      <input type="url" id="scraper-url" placeholder="https://speedhive.mylaps.com/Sessions/...">
+    </div>
+    <div class="form-group">
+      <label>Team / Kart Number (optional filter)</label>
+      <input type="text" id="scraper-team" placeholder="e.g. 42">
+    </div>
+    <div id="scraper-status-display" style="font-size:13px;color:var(--text-muted)"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="Dashboard.closeModal('scraper-panel-overlay')">Close</button>
+      <button class="btn danger" onclick="Dashboard.stopScraper()">Stop</button>
+      <button class="btn primary" onclick="Dashboard.startScraper()">Start Scraper</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Panel -->
+<div id="settings-panel">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h2>Settings</h2>
+    <button class="btn" onclick="Dashboard.closeSettings()">✕</button>
+  </div>
+
+  <div class="panel-title" style="margin-top:8px">Driver Weights & Pedal Positions</div>
+  <div id="driver-settings-list"></div>
+
+  <div class="panel-title" style="margin-top:12px">Fuel Model</div>
+  <div class="form-group">
+    <label>Tank Capacity (litres)</label>
+    <input type="number" id="set-tank" step="0.1" min="1" max="10">
+  </div>
+  <div class="form-group">
+    <label>Safety Margin (laps before pit)</label>
+    <input type="number" id="set-margin" min="0" max="10">
+  </div>
+  <div class="form-group">
+    <label>Current Fuel Level (litres)</label>
+    <input type="number" id="set-fuel-level" step="0.1" min="0" max="10">
+  </div>
+  <button class="btn primary" onclick="Dashboard.saveSettings()">Save Settings</button>
+</div>
+
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
