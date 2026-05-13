@@ -1,4 +1,4 @@
-# Daytona 24 Race Strategy Dashboard — Codebase Reference
+# Daytona 24 Race Strategy Dashboard
 
 ## Overview
 

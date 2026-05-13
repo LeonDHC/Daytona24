@@ -85,19 +85,46 @@ async def init_db() -> None:
     await seed_drivers_from_ini()
 
 
+def _parse_driver_ini(cfg: configparser.ConfigParser) -> dict[str, dict]:
+    """Parse [DRIVERS] section into {name: {weight_kg, pedal_pos}}."""
+    out = {}
+    if not cfg.has_section("DRIVERS"):
+        return out
+    for name, value in cfg.items("DRIVERS"):
+        if name == "__name__":
+            continue
+        fields = {}
+        for part in value.split(","):
+            part = part.strip()
+            if ":" in part:
+                k, v = part.split(":", 1)
+                fields[k.strip()] = v.strip()
+        out[name.lower()] = fields
+    return out
+
+
 async def seed_drivers_from_ini() -> None:
     cfg = configparser.ConfigParser()
     cfg.read(INI_PATH)
-    section = "TESTING"
-    if not cfg.has_section(section):
+    if not cfg.has_section("TESTING"):
         return
-    raw = cfg.get(section, "drivers", fallback="")
+    raw = cfg.get("TESTING", "drivers", fallback="")
     names = [n.strip() for n in raw.split(",") if n.strip()]
+    driver_config = _parse_driver_ini(cfg)
+
     async with aiosqlite.connect(DB_PATH) as db:
         for i, name in enumerate(names):
+            cfg_entry = driver_config.get(name.lower(), {})
+            weight_kg = float(cfg_entry.get("weight_kg", 85.0))
+            pedal_pos = cfg_entry.get("pedal_pos", "3")
+            # Insert if not present, then sync weight/pedal from INI on every startup
             await db.execute(
-                "INSERT OR IGNORE INTO drivers (name, weight_kg, pedal_pos, rotation_order) VALUES (?, 85.0, '3', ?)",
-                (name, i),
+                "INSERT OR IGNORE INTO drivers (name, weight_kg, pedal_pos, rotation_order) VALUES (?, ?, ?, ?)",
+                (name, weight_kg, pedal_pos, i),
+            )
+            await db.execute(
+                "UPDATE drivers SET weight_kg = ?, pedal_pos = ?, rotation_order = ? WHERE name = ?",
+                (weight_kg, pedal_pos, i, name),
             )
         await db.commit()
 

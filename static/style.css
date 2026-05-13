@@ -27,6 +27,13 @@ html, body {
   overflow: hidden;
 }
 
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#header { flex-shrink: 0; }
+
 /* ── Alert banner ──────────────────────────────────────────────────────────── */
 
 #alert-banner {
@@ -63,14 +70,16 @@ html, body {
 #grid {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr;
-  grid-template-rows: auto auto auto;
+  grid-template-rows: minmax(160px, auto) minmax(180px, 1.6fr) minmax(180px, 2fr);
   grid-template-areas:
     "current   next      fuel      alerts"
     "laps      laps      chart     chart"
     "rotation  rotation  maint     radar";
   gap: 8px;
   padding: 8px;
-  height: calc(100vh - var(--banner-h, 0px));
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* ── Panels ────────────────────────────────────────────────────────────────── */
