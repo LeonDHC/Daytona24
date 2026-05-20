@@ -46,6 +46,11 @@ class FuelModel:
     _ema: float = field(default=0.0, init=False)
     _initialised: bool = field(default=False, init=False)
 
+    def reset(self) -> None:
+        """Clear EMA state so it can be re-seeded from scratch."""
+        self._ema = 0.0
+        self._initialised = False
+
     def update_from_practice(self, sessions: list[dict]) -> None:
         """Seed the EMA from practice session records."""
         for s in sessions:
@@ -187,6 +192,11 @@ class AlertEngine:
 
     def dismiss(self, alert_id: str) -> None:
         self._dismissed.add(alert_id)
+
+    def reset(self) -> None:
+        """Clear dismissed/maintenance state — used on race reset."""
+        self._dismissed.clear()
+        self._maintenance_done.clear()
 
     def active_alerts(self, now: datetime) -> list[Alert]:
         alerts: list[Alert] = []

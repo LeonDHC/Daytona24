@@ -113,14 +113,18 @@
 
   <!-- Fuel -->
   <div class="panel" id="panel-fuel">
-    <div class="panel-title">Fuel</div>
+    <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Fuel</span>
+      <button class="btn" style="padding:1px 6px;font-size:11px" title="Fuel model inputs &amp; calculation" onclick="Dashboard.openFuelModelModal()">⚙</button>
+    </div>
     <div class="fuel-row">
       <div class="fuel-gauge-wrap">
         <div class="fuel-gauge-fill" id="fuel-gauge-fill" style="height:100%"></div>
       </div>
       <div class="fuel-stats">
-        <div class="fuel-big" id="fuel-laps">—</div>
-        <div class="fuel-sub">laps to pit</div>
+        <div class="fuel-big" id="fuel-laps" title="" style="cursor:help"
+             onmouseenter="Dashboard.showFuelTooltip(this)" onmouseleave="Dashboard.hideFuelTooltip()">—</div>
+        <div class="fuel-sub">laps to pit  ⓘ</div>
         <div class="detail-row" style="margin-top:6px">
           <span class="detail-label">Level</span>
           <span class="detail-value" id="fuel-level">—</span>
@@ -269,8 +273,14 @@
       <input type="number" id="swap-lap" min="1" placeholder="auto (next lap)">
     </div>
     <div class="form-group">
-      <label>Fuel Level After Refuel (litres) — defaults to full tank</label>
-      <input type="number" id="swap-fuel" step="0.1" min="0" max="6" placeholder="10.0">
+      <label>Fuel remaining BEFORE refuel (litres) — closes the stint, feeds the EMA</label>
+      <input type="number" id="swap-fuel-before" step="0.01" min="0" placeholder="model estimate"
+             oninput="Dashboard.updateSwapPreview()">
+    </div>
+    <div class="form-group">
+      <label>Fuel level AFTER refuel (litres) — starts the next stint, defaults to full tank</label>
+      <input type="number" id="swap-fuel-after" step="0.01" min="0" placeholder="tank capacity"
+             oninput="Dashboard.updateSwapPreview()">
     </div>
     <div style="padding:8px;background:#0f172a;border-radius:6px;font-size:13px" id="swap-preview"></div>
     <div class="modal-actions">
@@ -385,6 +395,20 @@
   </div>
 </div>
 
+<!-- Fuel Model Modal -->
+<div class="modal-overlay" id="modal-fuelmodel-overlay" onclick="Dashboard.closeModal('modal-fuelmodel-overlay')">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:720px;width:95vw;max-height:90vh;overflow-y:auto">
+    <h2>Fuel Model</h2>
+    <div id="fuelmodel-body" style="font-size:13px;line-height:1.5">Loading…</div>
+    <div class="modal-actions">
+      <button class="btn" onclick="Dashboard.closeModal('modal-fuelmodel-overlay')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Fuel tooltip (floating) -->
+<div id="fuel-tooltip" style="display:none;position:fixed;z-index:300;background:#0b1120;border:1px solid var(--card-border);border-radius:6px;padding:8px 10px;font-size:12px;color:var(--text);max-width:280px;pointer-events:none;box-shadow:0 6px 16px rgba(0,0,0,0.6)"></div>
+
 <!-- Settings Panel -->
 <div id="settings-panel">
   <div style="display:flex;justify-content:space-between;align-items:center">
@@ -409,6 +433,15 @@
     <input type="number" id="set-fuel-level" step="0.1" min="0" max="10">
   </div>
   <button class="btn primary" onclick="Dashboard.saveSettings()">Save Settings</button>
+
+  <div class="panel-title" style="margin-top:18px;color:var(--red)">Danger Zone</div>
+  <div style="border:1px solid var(--red);border-radius:6px;padding:10px;background:#7f1d1d22">
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">
+      Deletes all laps, stints, fuel fills, and standings. Resets lap counter, fuel level, and alert state.
+      <strong>Practice sessions, driver setup, and tank settings are kept.</strong>
+    </div>
+    <button class="btn danger" onclick="Dashboard.resetRace()" style="width:100%">Reset Race</button>
+  </div>
 </div>
 
 

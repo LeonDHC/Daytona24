@@ -73,14 +73,28 @@ async def _load_state_into_memory() -> None:
     for lap in laps:
         _lap_model.update(lap["lap_time_ms"], lap["flag_condition"])
 
-    # Seed fuel model from practice sessions
-    practice = await db.get_practice_sessions()
-    _fuel_model.update_from_practice(practice)
+    # Seed fuel model from all known inputs (practice + completed stints)
+    await _recompute_fuel_model()
 
     # Restore current driver index
     current = state.get("current_driver", "")
     if current and current in _stint_calc.drivers:
         _stint_calc.current_index = _stint_calc.drivers.index(current)
+
+
+async def _recompute_fuel_model() -> None:
+    """Rebuild the FuelModel EMA from scratch using all practice sessions and
+    every completed stint that has both fuel endpoints. Called on startup and
+    after any edit/delete to practice sessions or stints."""
+    _fuel_model.reset()
+    practice = await db.get_practice_sessions()
+    _fuel_model.update_from_practice(practice)
+    for s in await db.get_stints():
+        if s.get("ended_at") and s.get("fuel_start_L") is not None and s.get("fuel_end_L") is not None:
+            laps = (s.get("end_lap") or 0) - (s.get("start_lap") or 0)
+            litres = float(s["fuel_start_L"]) - float(s["fuel_end_L"])
+            if laps > 0 and litres > 0:
+                _fuel_model.update_from_stint(litres, laps)
 
 
 async def _broadcast_current_driver():
@@ -295,16 +309,80 @@ async def startup():
 async def race_start():
     now = datetime.now(utc)
     await db.set_state_many({"race_started": "1", "race_started_at": now.isoformat()})
+
+    # Open stint #1 for the rotation's current driver if no stint is already open.
+    # Without this, the first driver's burn never reaches the fuel EMA — the first
+    # Driver Swap has no prior stint to close, so update_from_stint() is skipped.
+    current = await db.get_current_stint()
+    if current is None:
+        driver = _stint_calc.current_driver()
+        if driver and driver != "—":
+            state = await db.get_state()
+            start_lap = int(state.get("current_lap", 0))
+            await db.start_stint(
+                driver,
+                now.isoformat(),
+                _fuel_model.current_level_L,
+                start_lap,
+            )
+            await db.set_state("current_driver", driver)
+
     await manager.broadcast({"type": "race_started", "data": {"started_at": now.isoformat()}})
+    await manager.broadcast(await _full_state())
     return {"ok": True}
 
 
 @app.post("/api/race/reset")
 async def race_reset():
-    await db.set_state_many({"race_started": "0", "current_lap": "0", "fuel_level_L": str(_fuel_model.tank_capacity_L)})
+    """Wipe every piece of race-generated data while preserving calibration:
+    drivers, practice sessions, tank/safety settings, and scraper config stay.
+    Laps, stints, fuel fills, lap counter, standings, EMA state, and alert
+    dismissals are all cleared."""
+    global _scraper_task
+
+    # Stop the scraper — race is being reset, no point pulling old session data
+    if _scraper_task and not _scraper_task.done():
+        _scraper_task.cancel()
+    _scraper_status.update({"running": False, "last_poll": None, "error": None})
+
+    # Wipe race-generated data
+    laps_deleted = await db.delete_all_laps()
+    stints_deleted = await db.delete_all_stints()
+    fills_deleted = await db.delete_all_fuel_fills()
+
+    # Reset race_state keys (preserve tank_capacity_L, safety_margin_laps, scraper config, drivers)
+    drivers = await db.get_drivers()
+    first_driver = drivers[0]["name"] if drivers else ""
+    await db.set_state_many({
+        "race_started": "0",
+        "race_started_at": "",
+        "current_lap": "0",
+        "fuel_level_L": str(_fuel_model.tank_capacity_L),
+        "current_driver": first_driver,
+        "position": "",
+        "gap_ahead": "",
+        "gap_behind": "",
+    })
+
+    # Reset in-memory models
     _fuel_model.current_level_L = _fuel_model.tank_capacity_L
     _lap_model._initialised = False
-    return {"ok": True}
+    _lap_model._ema_ms = 0.0
+    _alert_engine.reset()
+    _stint_calc.current_index = 0
+
+    # Re-seed fuel model from remaining inputs (practice only — stints are gone)
+    await _recompute_fuel_model()
+
+    # Broadcast full state so every connected client snaps to the clean slate
+    await manager.broadcast(await _full_state())
+
+    return {
+        "ok": True,
+        "laps_deleted": laps_deleted,
+        "stints_deleted": stints_deleted,
+        "fuel_fills_deleted": fills_deleted,
+    }
 
 
 @app.get("/api/state")
@@ -452,9 +530,23 @@ async def get_stints():
 
 @app.post("/api/stints/end")
 async def end_stint(body: dict):
+    """
+    Body fields:
+      next_driver       — name of incoming driver (else picks rotation's next_driver())
+      swap_lap          — lap the swap takes effect (defaults to current_lap + 1)
+      fuel_before_L     — fuel REMAINING in the tank when the kart arrived in the pit.
+                          This is what closes the prior stint and feeds the EMA.
+      fuel_after_L      — fuel level AFTER refuelling. Becomes the new stint's
+                          starting fuel and the live model level.
+                          Defaults to a full tank.
+
+      Legacy: `fuel_level_L` is interpreted as `fuel_after_L` if provided alone,
+              so older clients keep working (but get the buggy old semantics — please update).
+    """
     next_driver = body.get("next_driver", "").strip()
-    fuel_level_L_raw = body.get("fuel_level_L")
     swap_lap_raw = body.get("swap_lap")
+    fuel_before_raw = body.get("fuel_before_L")
+    fuel_after_raw = body.get("fuel_after_L", body.get("fuel_level_L"))  # legacy alias
 
     now = datetime.now(utc)
     state = await db.get_state()
@@ -476,27 +568,38 @@ async def end_stint(body: dict):
                 f"swap_lap cannot be in the future (current lap is {current_lap}, max allowed is {current_lap + 1})",
             )
 
-    # Default fuel level to a full tank if not provided
-    if fuel_level_L_raw is None or str(fuel_level_L_raw).strip() == "":
-        new_fuel_level = _fuel_model.tank_capacity_L
+    # Fuel AFTER refuel → defaults to tank capacity (typical pit-stop scenario)
+    if fuel_after_raw is None or str(fuel_after_raw).strip() == "":
+        fuel_after = _fuel_model.tank_capacity_L
     else:
-        new_fuel_level = float(fuel_level_L_raw)
+        fuel_after = float(fuel_after_raw)
+    if fuel_after < 0:
+        raise HTTPException(400, "fuel_after_L must be >= 0")
+
+    # Fuel BEFORE refuel → defaults to whatever the model thinks is left right now.
+    # This is the value that ends the prior stint and updates the EMA.
+    if fuel_before_raw is None or str(fuel_before_raw).strip() == "":
+        fuel_before = _fuel_model.current_level_L
+    else:
+        fuel_before = float(fuel_before_raw)
+    if fuel_before < 0:
+        raise HTTPException(400, "fuel_before_L must be >= 0")
 
     # Close prior stint at swap_lap - 1 (the last lap the previous driver completed)
     current = await db.get_current_stint()
     if current:
         prior_end_lap = max(current.get("start_lap") or 0, swap_lap - 1)
-        await db.end_stint(current["id"], now.isoformat(), new_fuel_level, prior_end_lap)
+        await db.end_stint(current["id"], now.isoformat(), fuel_before, prior_end_lap)
 
         if current.get("fuel_start_L") is not None:
             laps_in_stint = prior_end_lap - (current.get("start_lap") or 0)
-            litres_used = float(current["fuel_start_L"]) - new_fuel_level
+            litres_used = float(current["fuel_start_L"]) - fuel_before
             if laps_in_stint > 0 and litres_used > 0:
                 _fuel_model.update_from_stint(litres_used, laps_in_stint)
 
-    # Reset fuel level to the post-pit value
-    _fuel_model.current_level_L = new_fuel_level
-    await db.set_state("fuel_level_L", str(new_fuel_level))
+    # Reset live fuel level to the post-refuel value
+    _fuel_model.current_level_L = fuel_after
+    await db.set_state("fuel_level_L", str(fuel_after))
 
     if not next_driver:
         next_driver = _stint_calc.next_driver()
@@ -509,7 +612,7 @@ async def end_stint(body: dict):
     new_stint_id = await db.start_stint(
         next_driver,
         now.isoformat(),
-        new_fuel_level,
+        fuel_after,
         swap_lap,
     )
 
@@ -523,7 +626,8 @@ async def end_stint(body: dict):
         "driver": next_driver,
         "swap_lap": swap_lap,
         "reassigned_laps": reassigned,
-        "fuel_level_L": new_fuel_level,
+        "fuel_before_L": fuel_before,
+        "fuel_after_L": fuel_after,
     }
 
 
@@ -649,6 +753,127 @@ async def practice_consumption():
 
 
 DEFAULT_CONSUMPTION_LPL_VALUE = 0.35
+
+
+# ── API: Fuel model inputs (edit/delete + breakdown) ─────────────────────────
+
+@app.put("/api/practice/{session_id}")
+async def edit_practice(session_id: int, body: dict):
+    # Coerce numeric fields if present
+    if "fuel_start_L" in body: body["fuel_start_L"] = float(body["fuel_start_L"])
+    if "fuel_end_L" in body:   body["fuel_end_L"]   = float(body["fuel_end_L"])
+    if "laps_completed" in body: body["laps_completed"] = int(body["laps_completed"])
+    if "avg_lap_time_ms" in body and body["avg_lap_time_ms"] not in (None, ""):
+        body["avg_lap_time_ms"] = int(body["avg_lap_time_ms"])
+    if "flag_condition" in body: body["flag_condition"] = str(body["flag_condition"]).upper()
+    ok = await db.update_practice_session(session_id, body)
+    if not ok:
+        raise HTTPException(404, "practice session not found or no editable fields supplied")
+    await _recompute_fuel_model()
+    await manager.broadcast(await _full_state())
+    return {"ok": True}
+
+
+@app.delete("/api/practice/{session_id}")
+async def remove_practice(session_id: int):
+    ok = await db.delete_practice_session(session_id)
+    if not ok:
+        raise HTTPException(404, "practice session not found")
+    await _recompute_fuel_model()
+    await manager.broadcast(await _full_state())
+    return {"ok": True}
+
+
+@app.put("/api/stints/{stint_id}")
+async def edit_stint(stint_id: int, body: dict):
+    if "fuel_start_L" in body and body["fuel_start_L"] not in (None, ""): body["fuel_start_L"] = float(body["fuel_start_L"])
+    if "fuel_end_L" in body and body["fuel_end_L"] not in (None, ""):     body["fuel_end_L"]   = float(body["fuel_end_L"])
+    if "start_lap" in body and body["start_lap"] not in (None, ""):       body["start_lap"]    = int(body["start_lap"])
+    if "end_lap" in body and body["end_lap"] not in (None, ""):           body["end_lap"]      = int(body["end_lap"])
+    ok = await db.update_stint(stint_id, body)
+    if not ok:
+        raise HTTPException(404, "stint not found or no editable fields supplied")
+    await _recompute_fuel_model()
+    await manager.broadcast(await _full_state())
+    return {"ok": True}
+
+
+@app.delete("/api/stints/{stint_id}")
+async def remove_stint(stint_id: int):
+    laps_deleted = await db.delete_stint(stint_id)
+    await _recompute_fuel_model()
+    await manager.broadcast(await _full_state())
+    return {"ok": True, "laps_deleted": laps_deleted}
+
+
+@app.get("/api/fuel/breakdown")
+async def fuel_breakdown():
+    """Per-input contribution to the EMA + the live math behind laps-to-pit."""
+    now = datetime.now(utc)
+    practice = await db.get_practice_sessions()
+    stints = await db.get_stints()
+
+    practice_out = []
+    for s in practice:
+        used = (s.get("fuel_start_L") or 0) - (s.get("fuel_end_L") or 0)
+        laps = s.get("laps_completed") or 0
+        flag = s.get("flag_condition") or "GREEN"
+        raw = used / laps if laps > 0 and used > 0 else None
+        mult = FLAG_MULTIPLIERS.get(flag, 1.0)
+        norm = (raw / mult) if (raw is not None and mult > 0) else None
+        practice_out.append({
+            **s,
+            "raw_Lpl": round(raw, 4) if raw is not None else None,
+            "normalised_Lpl": round(norm, 4) if norm is not None else None,
+        })
+
+    stints_out = []
+    for s in stints:
+        if not s.get("ended_at"):
+            continue   # exclude the currently open stint
+        if s.get("fuel_start_L") is None or s.get("fuel_end_L") is None:
+            continue
+        laps = (s.get("end_lap") or 0) - (s.get("start_lap") or 0)
+        used = float(s["fuel_start_L"]) - float(s["fuel_end_L"])
+        raw = (used / laps) if laps > 0 and used > 0 else None
+        stints_out.append({
+            **s,
+            "laps": laps,
+            "raw_Lpl": round(raw, 4) if raw is not None else None,
+            "normalised_Lpl": round(raw, 4) if raw is not None else None,  # stints assumed GREEN → no scaling
+        })
+
+    # Current flag is whatever the most recent lap reports; fall back to GREEN
+    laps_recent = await db.get_laps(limit=1)
+    current_flag = laps_recent[0]["flag_condition"] if laps_recent else "GREEN"
+    flag_mult = FLAG_MULTIPLIERS.get(current_flag, 1.0)
+    consumption = _fuel_model.avg_consumption_Lpl
+    effective = consumption * flag_mult
+
+    return {
+        "inputs": {"practice": practice_out, "stints": stints_out},
+        "ema": {
+            "alpha": _fuel_model.alpha,
+            "current_Lpl": round(consumption, 4),
+            "default_Lpl_if_uninitialised": DEFAULT_CONSUMPTION_LPL_VALUE,
+            "initialised": _fuel_model._initialised,
+        },
+        "calculation": {
+            "current_level_L": round(_fuel_model.current_level_L, 3),
+            "tank_capacity_L": _fuel_model.tank_capacity_L,
+            "consumption_Lpl": round(consumption, 4),
+            "current_flag": current_flag,
+            "flag_multiplier": flag_mult,
+            "effective_Lpl": round(effective, 4),
+            "laps_to_empty": round(_fuel_model.laps_to_empty(current_flag), 2),
+            "safety_margin_laps": _fuel_model.safety_margin_laps,
+            "laps_until_pit": round(_fuel_model.laps_until_pit(current_flag), 2),
+            "avg_lap_s": round(_lap_model.avg_lap_s, 2),
+            "time_to_pit_s": int(_fuel_model.time_to_pit_seconds(_lap_model.avg_lap_s, current_flag)),
+            "stops_remaining": _fuel_model.stops_remaining(now, _lap_model.avg_lap_s),
+            "race_time_remaining_s": int(max(0, (RACE_END - now).total_seconds())),
+        },
+    }
 
 
 # ── API: Scraper ──────────────────────────────────────────────────────────────

@@ -228,6 +228,27 @@ async def get_laps(limit: int = 50, source: str = "all") -> list[dict]:
     return [dict(r) for r in reversed(rows)]
 
 
+async def delete_all_laps() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM laps")
+        await db.commit()
+        return cur.rowcount
+
+
+async def delete_all_stints() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM stints")
+        await db.commit()
+        return cur.rowcount
+
+
+async def delete_all_fuel_fills() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM fuel_fills")
+        await db.commit()
+        return cur.rowcount
+
+
 async def reassign_laps_from(from_lap_number: int, new_driver: str, new_stint_id: int) -> int:
     """Reassign laps with lap_number >= from_lap_number to new driver + stint.
     Used on driver swap to retroactively retag laps the scraper pulled before
@@ -363,3 +384,62 @@ async def get_practice_sessions() -> list[dict]:
         async with db.execute("SELECT * FROM practice_sessions ORDER BY id") as cur:
             rows = await cur.fetchall()
     return [dict(r) for r in rows]
+
+
+_PRACTICE_FIELDS = {"driver_name", "fuel_start_L", "fuel_end_L", "laps_completed", "avg_lap_time_ms", "flag_condition", "notes"}
+
+
+async def update_practice_session(session_id: int, fields: dict) -> bool:
+    """Update one or more columns on a practice session."""
+    cols, vals = [], []
+    for k, v in fields.items():
+        if k in _PRACTICE_FIELDS:
+            cols.append(f"{k} = ?")
+            vals.append(v)
+    if not cols:
+        return False
+    vals.append(session_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            f"UPDATE practice_sessions SET {', '.join(cols)} WHERE id = ?", vals,
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def delete_practice_session(session_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM practice_sessions WHERE id = ?", (session_id,))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+_STINT_EDITABLE = {"fuel_start_L", "fuel_end_L", "start_lap", "end_lap"}
+
+
+async def update_stint(stint_id: int, fields: dict) -> bool:
+    """Update fuel + lap-range fields on an existing stint."""
+    cols, vals = [], []
+    for k, v in fields.items():
+        if k in _STINT_EDITABLE:
+            cols.append(f"{k} = ?")
+            vals.append(v)
+    if not cols:
+        return False
+    vals.append(stint_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            f"UPDATE stints SET {', '.join(cols)} WHERE id = ?", vals,
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def delete_stint(stint_id: int) -> int:
+    """Delete a stint and cascade-delete its laps. Returns count of laps deleted."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM laps WHERE stint_id = ?", (stint_id,))
+        laps_deleted = cur.rowcount
+        await db.execute("DELETE FROM stints WHERE id = ?", (stint_id,))
+        await db.commit()
+        return laps_deleted

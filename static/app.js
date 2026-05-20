@@ -117,6 +117,11 @@ const Dashboard = (() => {
 
     // Standings (position + gaps)
     updateStandings(data.standings || {});
+
+    // If Fuel Model modal is open, refresh its data on any full-state push
+    if (el('modal-fuelmodel-overlay').classList.contains('open')) {
+      loadFuelBreakdown();
+    }
   }
 
   // ── Current Driver Panel ───────────────────────────────────────────────────
@@ -573,26 +578,58 @@ const Dashboard = (() => {
   }
 
   function openSwapModal() {
-    const curr = state.current_driver;
     const next = state.next_driver;
-    if (curr && next) {
-      el('swap-driver').value = next.name || '';
-      const preview = el('swap-preview');
-      const delta = next.ballast_delta_kg || 0;
-      const sign = delta > 0 ? 'ADD' : delta < 0 ? 'REMOVE' : 'NO CHANGE';
-      preview.innerHTML = `
-        <strong>${capitalize(curr.name)}</strong> → <strong>${capitalize(next.name)}</strong><br>
-        Ballast: ${sign} ${Math.abs(delta).toFixed(1)} kg<br>
-        Pedal: ${curr.pedal_pos} → ${next.pedal_pos}
-      `;
-    }
+    if (next) el('swap-driver').value = next.name || '';
+
     // Pre-fill swap-lap with the next lap (operator can override for catch-up swaps)
     const currLap = state.current_lap || 0;
     el('swap-lap').value = currLap + 1;
-    // Pre-fill fuel with full tank (operator can override)
+
+    // BEFORE refuel → model's current estimate of remaining fuel
+    const level = state.fuel && state.fuel.level_L;
+    el('swap-fuel-before').value = level != null ? level.toFixed(2) : '';
+
+    // AFTER refuel → full tank by default
     const tank = state.fuel && state.fuel.capacity_L;
-    el('swap-fuel').value = tank != null ? tank : '';
+    el('swap-fuel-after').value = tank != null ? tank : '';
+
+    updateSwapPreview();
     el('modal-swap-overlay').classList.add('open');
+  }
+
+  function updateSwapPreview() {
+    const curr = state.current_driver || {};
+    const next = state.next_driver || {};
+    const fuel = state.fuel || {};
+    const before = parseFloat(el('swap-fuel-before').value);
+    const after = parseFloat(el('swap-fuel-after').value);
+
+    // Stint-consumption preview: (stint start fuel) − (fuel before refuel) over laps_in_kart
+    const stintStart = curr.stint_start_fuel_L != null
+      ? curr.stint_start_fuel_L
+      : fuel.capacity_L;
+    const lapsInKart = curr.laps_in_kart || 0;
+    let fuelLine = '';
+    if (!isNaN(before) && lapsInKart > 0 && stintStart != null) {
+      const burnt = Math.max(0, stintStart - before);
+      const lpl = burnt / lapsInKart;
+      fuelLine = `<br>Stint burn: <strong>${burnt.toFixed(2)} L</strong> over ${lapsInKart} laps = <strong>${lpl.toFixed(3)} L/lap</strong> → EMA`;
+    }
+    let refillLine = '';
+    if (!isNaN(before) && !isNaN(after)) {
+      const added = Math.max(0, after - before);
+      refillLine = `<br>Refuel: +${added.toFixed(2)} L (new tank ${after.toFixed(2)} L)`;
+    }
+
+    const delta = next.ballast_delta_kg || 0;
+    const sign = delta > 0 ? 'ADD' : delta < 0 ? 'REMOVE' : 'NO CHANGE';
+    const driverLine = (curr.name && next.name)
+      ? `<strong>${capitalize(curr.name)}</strong> → <strong>${capitalize(next.name)}</strong><br>
+         Ballast: ${sign} ${Math.abs(delta).toFixed(1)} kg<br>
+         Pedal: ${curr.pedal_pos} → ${next.pedal_pos}`
+      : '';
+
+    el('swap-preview').innerHTML = driverLine + fuelLine + refillLine;
   }
 
   function openFuelModal()     { el('modal-fuel-overlay').classList.add('open'); }
@@ -664,11 +701,13 @@ const Dashboard = (() => {
 
   async function submitSwap() {
     const next_driver = el('swap-driver').value;
-    const fuel_level = el('swap-fuel').value;
+    const fuel_before = el('swap-fuel-before').value;
+    const fuel_after = el('swap-fuel-after').value;
     const swap_lap = el('swap-lap').value;
     const body = { next_driver };
-    if (fuel_level) body.fuel_level_L = parseFloat(fuel_level);
-    if (swap_lap)   body.swap_lap = parseInt(swap_lap);
+    if (fuel_before !== '') body.fuel_before_L = parseFloat(fuel_before);
+    if (fuel_after  !== '') body.fuel_after_L  = parseFloat(fuel_after);
+    if (swap_lap)           body.swap_lap     = parseInt(swap_lap);
     const result = await apiPost('/api/stints/end', body);
     if (result && result.detail) {
       alert(`Swap failed: ${result.detail}`);
@@ -677,7 +716,8 @@ const Dashboard = (() => {
     if (result && result.reassigned_laps > 0) {
       console.log(`Reassigned ${result.reassigned_laps} laps to ${result.driver}`);
     }
-    el('swap-fuel').value = '';
+    el('swap-fuel-before').value = '';
+    el('swap-fuel-after').value = '';
     el('swap-lap').value = '';
     closeModal('modal-swap-overlay');
   }
@@ -722,6 +762,23 @@ const Dashboard = (() => {
     el('start-btn').disabled = true;
   }
 
+  async function resetRace() {
+    const typed = prompt(
+      'This deletes ALL laps, stints, fuel fills, and standings for the current race.\n' +
+      'Practice data, driver setup, and tank settings are kept.\n\n' +
+      'Type RESET to confirm:'
+    );
+    if (typed !== 'RESET') return;
+    const r = await apiPost('/api/race/reset', {});
+    if (r && r.detail) { alert('Reset failed: ' + r.detail); return; }
+    if (r && r.ok) {
+      alert(`Race reset: removed ${r.laps_deleted} laps, ${r.stints_deleted} stints, ${r.fuel_fills_deleted} fuel fills.`);
+      el('start-btn').textContent = 'Start Race';
+      el('start-btn').disabled = false;
+      closeSettings();
+    }
+  }
+
   async function startScraper() {
     const session_url = el('scraper-url').value.trim() || undefined;
     const team_number = el('scraper-team').value.trim() || undefined;
@@ -757,6 +814,233 @@ const Dashboard = (() => {
     } catch (e) { console.error(path, e); return { error: e.message }; }
   }
 
+  async function apiDelete(path) {
+    try {
+      const r = await fetch(path, { method: 'DELETE' });
+      return await r.json();
+    } catch (e) { console.error(path, e); return { error: e.message }; }
+  }
+
+  // ── Fuel Model modal ───────────────────────────────────────────────────────
+  let _fuelBreakdown = null;
+  let _editingPracticeId = null;
+  let _editingStintId = null;
+
+  async function openFuelModelModal() {
+    el('modal-fuelmodel-overlay').classList.add('open');
+    await loadFuelBreakdown();
+  }
+
+  async function loadFuelBreakdown() {
+    try {
+      const r = await fetch('/api/fuel/breakdown');
+      _fuelBreakdown = await r.json();
+      renderFuelModel();
+    } catch (e) {
+      el('fuelmodel-body').textContent = 'Failed to load: ' + e.message;
+    }
+  }
+
+  function renderFuelModel() {
+    if (!_fuelBreakdown) return;
+    const { inputs, ema, calculation: c } = _fuelBreakdown;
+    const practiceRows = inputs.practice.map(p => practiceRowHtml(p)).join('') || `<div class="text-muted" style="padding:6px">No practice sessions recorded.</div>`;
+    const stintRows = inputs.stints.map(s => stintRowHtml(s)).join('') || `<div class="text-muted" style="padding:6px">No completed stints yet.</div>`;
+
+    const initLabel = ema.initialised ? '' : ` <span class="text-muted">(uninitialised — using default ${ema.default_Lpl_if_uninitialised})</span>`;
+
+    el('fuelmodel-body').innerHTML = `
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:4px">
+        Inputs — contributing to L/lap EMA (α = ${ema.alpha})
+      </div>
+      <div style="margin-bottom:10px"><strong>Practice sessions</strong> (${inputs.practice.length})</div>
+      <div style="background:#0f172a;border:1px solid var(--card-border);border-radius:6px;padding:6px;margin-bottom:14px">${practiceRows}</div>
+
+      <div style="margin-bottom:10px"><strong>Stints</strong> (${inputs.stints.length} completed)</div>
+      <div style="background:#0f172a;border:1px solid var(--card-border);border-radius:6px;padding:6px;margin-bottom:14px">${stintRows}</div>
+
+      <div style="padding:8px;background:#0b1120;border-radius:6px;margin-bottom:14px">
+        <strong>Current EMA value:</strong> ${ema.current_Lpl.toFixed(4)} L/lap${initLabel}
+      </div>
+
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:8px">
+        Calculation — live, same values as Fuel panel
+      </div>
+      <div style="background:#0f172a;border:1px solid var(--card-border);border-radius:6px;padding:10px;font-variant-numeric:tabular-nums">
+        ${calcRow('Current fuel level',        `${c.current_level_L.toFixed(2)} L`)}
+        ${calcRow('÷ Avg consumption',         `${c.consumption_Lpl.toFixed(4)} L/lap`, 'from EMA above')}
+        ${calcRow('× Flag multiplier',         `×${c.flag_multiplier.toFixed(2)}`,       `current flag: ${c.current_flag}`)}
+        ${calcRow('= Effective L/lap',         `${c.effective_Lpl.toFixed(4)} L/lap`)}
+        <hr style="border:none;border-top:1px dashed var(--card-border);margin:6px 0">
+        ${calcRow('= Laps to empty',           c.laps_to_empty.toFixed(2))}
+        ${calcRow('− Safety margin',           `−${c.safety_margin_laps}`)}
+        ${calcRow('= Laps until pit',          `<strong style="color:var(--green)">${c.laps_until_pit.toFixed(2)}</strong>`, 'shown in Fuel panel')}
+        <hr style="border:none;border-top:1px dashed var(--card-border);margin:6px 0">
+        ${calcRow('× Avg lap time',            `${c.avg_lap_s.toFixed(2)} s`)}
+        ${calcRow('= Time to pit',             `<strong>${fmtDuration(c.time_to_pit_s)}</strong>`)}
+        <hr style="border:none;border-top:1px dashed var(--card-border);margin:6px 0">
+        ${calcRow('Stops remaining',           c.stops_remaining, `${fmtDuration(c.race_time_remaining_s)} of race left`)}
+      </div>
+    `;
+  }
+
+  function calcRow(label, value, note) {
+    return `<div style="display:flex;justify-content:space-between;padding:2px 0">
+      <span>${label}${note ? ` <span class="text-muted" style="font-size:11px">— ${note}</span>` : ''}</span>
+      <span>${value}</span>
+    </div>`;
+  }
+
+  function practiceRowHtml(p) {
+    if (_editingPracticeId === p.id) return practiceEditRow(p);
+    const raw = p.raw_Lpl != null ? p.raw_Lpl.toFixed(3) : '—';
+    const norm = p.normalised_Lpl != null ? p.normalised_Lpl.toFixed(3) : '—';
+    return `
+      <div style="padding:6px 4px;border-bottom:1px solid var(--card-border)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span><strong style="text-transform:capitalize">${p.driver_name}</strong>
+            · ${(+p.fuel_start_L).toFixed(2)}→${(+p.fuel_end_L).toFixed(2)} L
+            · ${p.laps_completed} laps
+            · <span class="flag-badge flag-${p.flag_condition}">${p.flag_condition}</span></span>
+          <span>
+            <button class="btn" style="padding:2px 6px;font-size:11px" onclick="Dashboard.editPractice(${p.id})">✎</button>
+            <button class="btn danger" style="padding:2px 6px;font-size:11px" onclick="Dashboard.deletePractice(${p.id})">✕</button>
+          </span>
+        </div>
+        <div class="text-muted" style="font-size:11px">raw ${raw} L/lap → normalised ${norm} L/lap${p.notes ? ' · ' + p.notes : ''}</div>
+      </div>`;
+  }
+
+  function practiceEditRow(p) {
+    return `
+      <div style="padding:6px 4px;border-bottom:1px solid var(--card-border);background:#1e293b">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:4px;align-items:end">
+          <label class="text-muted" style="font-size:11px">Fuel start
+            <input id="ep-fs-${p.id}" type="number" step="0.1" value="${p.fuel_start_L}" style="width:100%"></label>
+          <label class="text-muted" style="font-size:11px">Fuel end
+            <input id="ep-fe-${p.id}" type="number" step="0.1" value="${p.fuel_end_L}" style="width:100%"></label>
+          <label class="text-muted" style="font-size:11px">Laps
+            <input id="ep-l-${p.id}"  type="number" min="1"    value="${p.laps_completed}" style="width:100%"></label>
+          <label class="text-muted" style="font-size:11px">Flag
+            <select id="ep-f-${p.id}" style="width:100%">
+              ${['GREEN','YELLOW','SC','RED'].map(f => `<option ${f===p.flag_condition?'selected':''}>${f}</option>`).join('')}
+            </select></label>
+          <span>
+            <button class="btn primary" style="padding:2px 8px;font-size:11px" onclick="Dashboard.savePractice(${p.id})">Save</button>
+            <button class="btn" style="padding:2px 6px;font-size:11px" onclick="Dashboard.cancelPracticeEdit()">×</button>
+          </span>
+        </div>
+      </div>`;
+  }
+
+  function stintRowHtml(s) {
+    if (_editingStintId === s.id) return stintEditRow(s);
+    const raw = s.raw_Lpl != null ? s.raw_Lpl.toFixed(3) : '—';
+    return `
+      <div style="padding:6px 4px;border-bottom:1px solid var(--card-border)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span><strong style="text-transform:capitalize">${s.driver_name}</strong>
+            · laps ${s.start_lap}–${s.end_lap}
+            · ${s.fuel_start_L != null ? (+s.fuel_start_L).toFixed(2) : '—'}→${s.fuel_end_L != null ? (+s.fuel_end_L).toFixed(2) : '—'} L</span>
+          <span>
+            <button class="btn" style="padding:2px 6px;font-size:11px" onclick="Dashboard.editStint(${s.id})">✎</button>
+            <button class="btn danger" style="padding:2px 6px;font-size:11px" onclick="Dashboard.deleteStint(${s.id})">✕</button>
+          </span>
+        </div>
+        <div class="text-muted" style="font-size:11px">raw ${raw} L/lap (assumed GREEN)</div>
+      </div>`;
+  }
+
+  function stintEditRow(s) {
+    return `
+      <div style="padding:6px 4px;border-bottom:1px solid var(--card-border);background:#1e293b">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:4px;align-items:end">
+          <label class="text-muted" style="font-size:11px">Fuel start
+            <input id="es-fs-${s.id}" type="number" step="0.1" value="${s.fuel_start_L ?? ''}" style="width:100%"></label>
+          <label class="text-muted" style="font-size:11px">Fuel end
+            <input id="es-fe-${s.id}" type="number" step="0.1" value="${s.fuel_end_L ?? ''}"   style="width:100%"></label>
+          <label class="text-muted" style="font-size:11px">Start lap
+            <input id="es-sl-${s.id}" type="number" min="0"    value="${s.start_lap ?? ''}"    style="width:100%"></label>
+          <label class="text-muted" style="font-size:11px">End lap
+            <input id="es-el-${s.id}" type="number" min="0"    value="${s.end_lap ?? ''}"      style="width:100%"></label>
+          <span>
+            <button class="btn primary" style="padding:2px 8px;font-size:11px" onclick="Dashboard.saveStint(${s.id})">Save</button>
+            <button class="btn" style="padding:2px 6px;font-size:11px" onclick="Dashboard.cancelStintEdit()">×</button>
+          </span>
+        </div>
+      </div>`;
+  }
+
+  function editPractice(id) { _editingPracticeId = id; renderFuelModel(); }
+  function cancelPracticeEdit() { _editingPracticeId = null; renderFuelModel(); }
+
+  async function savePractice(id) {
+    const body = {
+      fuel_start_L: parseFloat(el(`ep-fs-${id}`).value),
+      fuel_end_L:   parseFloat(el(`ep-fe-${id}`).value),
+      laps_completed: parseInt(el(`ep-l-${id}`).value),
+      flag_condition: el(`ep-f-${id}`).value,
+    };
+    const r = await apiPut(`/api/practice/${id}`, body);
+    if (r && r.detail) { alert('Save failed: ' + r.detail); return; }
+    _editingPracticeId = null;
+    await loadFuelBreakdown();
+  }
+
+  async function deletePractice(id) {
+    if (!confirm('Delete this practice session? Fuel EMA will recompute.')) return;
+    const r = await apiDelete(`/api/practice/${id}`);
+    if (r && r.detail) { alert('Delete failed: ' + r.detail); return; }
+    await loadFuelBreakdown();
+  }
+
+  function editStint(id) { _editingStintId = id; renderFuelModel(); }
+  function cancelStintEdit() { _editingStintId = null; renderFuelModel(); }
+
+  async function saveStint(id) {
+    const body = {
+      fuel_start_L: parseFloat(el(`es-fs-${id}`).value),
+      fuel_end_L:   parseFloat(el(`es-fe-${id}`).value),
+      start_lap:    parseInt(el(`es-sl-${id}`).value),
+      end_lap:      parseInt(el(`es-el-${id}`).value),
+    };
+    const r = await apiPut(`/api/stints/${id}`, body);
+    if (r && r.detail) { alert('Save failed: ' + r.detail); return; }
+    _editingStintId = null;
+    await loadFuelBreakdown();
+  }
+
+  async function deleteStint(id) {
+    if (!confirm('Delete this stint AND all laps tagged to it? This cascades — laps will be permanently removed.')) return;
+    const r = await apiDelete(`/api/stints/${id}`);
+    if (r && r.detail) { alert('Delete failed: ' + r.detail); return; }
+    await loadFuelBreakdown();
+  }
+
+  // ── Fuel tooltip on the laps-to-pit number ─────────────────────────────────
+  function showFuelTooltip(anchor) {
+    const f = state.fuel || {};
+    const lm = state.lap_model || {};
+    if (f.laps_until_pit == null) return;
+    const tip = el('fuel-tooltip');
+    tip.innerHTML = `
+      <div style="margin-bottom:4px;font-weight:600">Laps until pit</div>
+      <div style="font-variant-numeric:tabular-nums">
+        ${f.level_L != null ? f.level_L.toFixed(2) : '—'} L  ÷  ${f.avg_consumption_Lpl != null ? f.avg_consumption_Lpl.toFixed(3) : '—'} L/lap<br>
+        = ${(f.laps_to_empty ?? 0).toFixed(2)} laps to empty<br>
+        − ${state.safety_margin_laps ?? 2} safety = <strong>${(f.laps_until_pit ?? 0).toFixed(2)}</strong><br>
+        × ${(lm.avg_lap_s ?? 0).toFixed(2)} s/lap = ${fmtDuration(f.time_to_pit_s ?? 0)}
+      </div>
+      <div class="text-muted" style="font-size:11px;margin-top:4px">Click ⚙ in Fuel header for full breakdown</div>
+    `;
+    const rect = anchor.getBoundingClientRect();
+    tip.style.left = `${Math.min(window.innerWidth - 300, rect.left)}px`;
+    tip.style.top  = `${rect.bottom + 6}px`;
+    tip.style.display = 'block';
+  }
+
+  function hideFuelTooltip() { el('fuel-tooltip').style.display = 'none'; }
+
   // ── Formatting ──────────────────────────────────────────────────────────────
   function fmtDuration(s) {
     s = Math.max(0, Math.floor(s));
@@ -791,9 +1075,14 @@ const Dashboard = (() => {
     openScraperPanel, openSettings, closeModal, closeSettings,
     openStandingsModal, submitStandings,
     submitLap, submitSwap, submitFuelFill, submitPractice,
-    startRace, startScraper, stopScraper,
+    updateSwapPreview,
+    startRace, resetRace, startScraper, stopScraper,
     dismissAlert, markMaintenanceDone,
     saveSettings,
+    openFuelModelModal,
+    editPractice, cancelPracticeEdit, savePractice, deletePractice,
+    editStint, cancelStintEdit, saveStint, deleteStint,
+    showFuelTooltip, hideFuelTooltip,
     init,
   };
 })();
