@@ -223,6 +223,8 @@ async def _full_state() -> dict:
                 "position": int(state["position"]) if state.get("position", "").strip().isdigit() else None,
                 "gap_ahead": state.get("gap_ahead") or None,
                 "gap_behind": state.get("gap_behind") or None,
+                "kart_ahead": state.get("kart_ahead") or None,
+                "kart_behind": state.get("kart_behind") or None,
             },
         },
     }
@@ -968,6 +970,8 @@ async def scraper_start(body: dict):
             "position": str(standings.get("position", "")),
             "gap_ahead": str(standings.get("gap_ahead", "")),
             "gap_behind": str(standings.get("gap_behind", "")),
+            "kart_ahead": str(standings.get("kart_ahead") or ""),
+            "kart_behind": str(standings.get("kart_behind") or ""),
         })
         await manager.broadcast({"type": "standings_update", "data": standings})
 
@@ -989,10 +993,12 @@ async def scraper_start(body: dict):
 
 @app.post("/api/standings")
 async def update_standings(body: dict):
-    """Manual override for position / gap_ahead / gap_behind (pit-board entry)."""
+    """Manual override for position, gap_ahead, gap_behind, kart_ahead, kart_behind."""
     position = body.get("position")
     gap_ahead = body.get("gap_ahead")
     gap_behind = body.get("gap_behind")
+    kart_ahead = body.get("kart_ahead")
+    kart_behind = body.get("kart_behind")
 
     updates: dict[str, str] = {}
     if position is not None and str(position).strip():
@@ -1004,6 +1010,10 @@ async def update_standings(body: dict):
         updates["gap_ahead"] = str(gap_ahead).strip()
     if gap_behind is not None:
         updates["gap_behind"] = str(gap_behind).strip()
+    if kart_ahead is not None:
+        updates["kart_ahead"] = str(kart_ahead).strip().lstrip("#")
+    if kart_behind is not None:
+        updates["kart_behind"] = str(kart_behind).strip().lstrip("#")
 
     if not updates:
         raise HTTPException(400, "no fields to update")
@@ -1013,6 +1023,8 @@ async def update_standings(body: dict):
         "position": int(updates["position"]) if "position" in updates else None,
         "gap_ahead": updates.get("gap_ahead"),
         "gap_behind": updates.get("gap_behind"),
+        "kart_ahead": updates.get("kart_ahead"),
+        "kart_behind": updates.get("kart_behind"),
     }
     await manager.broadcast({"type": "standings_update", "data": standings})
     return {"ok": True, **standings}

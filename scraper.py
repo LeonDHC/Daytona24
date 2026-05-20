@@ -290,12 +290,19 @@ class SpeedHiveScraper:
                         gap_s, laps_down = g, l
                         break
 
-            is_us = any(c.strip() == str(self._team_number) for c in cells)
+            # Find which column held our team_number — used to extract neighbours' kart numbers
+            kart_col = None
+            for idx, c in enumerate(cells):
+                if c.strip() == str(self._team_number):
+                    kart_col = idx
+                    break
+
             parsed.append({
                 "position": position,
                 "gap_to_leader_s": gap_s,
                 "laps_down": laps_down or 0,
-                "is_us": is_us,
+                "is_us": kart_col is not None,
+                "cells": cells,
             })
 
         if not parsed:
@@ -309,6 +316,7 @@ class SpeedHiveScraper:
                 seen_positions[row["position"]] = row
             if row["is_us"]:
                 seen_positions[row["position"]]["is_us"] = True
+                seen_positions[row["position"]]["cells"] = row["cells"]
         parsed = sorted(seen_positions.values(), key=lambda r: r["position"])
 
         our_idx = next((i for i, r in enumerate(parsed) if r["is_us"]), None)
@@ -318,6 +326,21 @@ class SpeedHiveScraper:
         us = parsed[our_idx]
         ahead = parsed[our_idx - 1] if our_idx > 0 else None
         behind = parsed[our_idx + 1] if our_idx + 1 < len(parsed) else None
+
+        # Detect which column carried our kart number; reuse for adjacent rows
+        try:
+            our_kart_col = us["cells"].index(str(self._team_number))
+        except (ValueError, KeyError):
+            our_kart_col = None
+
+        def kart_at(row: dict | None) -> str | None:
+            if not row or our_kart_col is None:
+                return None
+            cells = row.get("cells") or []
+            if our_kart_col < len(cells):
+                val = cells[our_kart_col].strip()
+                return val or None
+            return None
 
         def gap_between(leader: dict, follower: dict) -> tuple[float | None, int]:
             lap_diff = (follower["laps_down"] or 0) - (leader["laps_down"] or 0)
@@ -343,6 +366,8 @@ class SpeedHiveScraper:
             "position": us["position"],
             "gap_ahead": gap_ahead,
             "gap_behind": gap_behind,
+            "kart_ahead": kart_at(ahead),
+            "kart_behind": kart_at(behind),
         }
 
     async def poll_standings(self) -> dict | None:

@@ -159,6 +159,8 @@ const Dashboard = (() => {
     const posEl = el('hdr-position');
     const aheadEl = el('hdr-gap-ahead');
     const behindEl = el('hdr-gap-behind');
+    const kartAheadEl = el('hdr-kart-ahead');
+    const kartBehindEl = el('hdr-kart-behind');
 
     const pos = s && s.position;
     posEl.textContent = pos != null ? `P${pos}` : '—';
@@ -169,10 +171,16 @@ const Dashboard = (() => {
       pos > 10 ? ' drop' : ''
     );
 
+    kartAheadEl.textContent  = s && s.kart_ahead  ? '#' + s.kart_ahead  : '—';
+    kartBehindEl.textContent = s && s.kart_behind ? '#' + s.kart_behind : '—';
+
     aheadEl.textContent = s && s.gap_ahead ? s.gap_ahead : '—';
     behindEl.textContent = s && s.gap_behind ? s.gap_behind : '—';
-    aheadEl.className = gapColorClass(s && s.gap_ahead);
-    behindEl.className = gapColorClass(s && s.gap_behind);
+    // gapColorClass also strips the muted default — keep size/margin via inline style
+    aheadEl.className = 'text-muted ' + gapColorClass(s && s.gap_ahead);
+    behindEl.className = 'text-muted ' + gapColorClass(s && s.gap_behind);
+    aheadEl.style.fontSize = '11px';  aheadEl.style.marginLeft = '4px';
+    behindEl.style.fontSize = '11px'; behindEl.style.marginLeft = '4px';
   }
 
   function gapColorClass(gap) {
@@ -190,6 +198,8 @@ const Dashboard = (() => {
     el('stand-pos').value = s.position || '';
     el('stand-ahead').value = s.gap_ahead || '';
     el('stand-behind').value = s.gap_behind || '';
+    el('stand-kart-ahead').value = s.kart_ahead || '';
+    el('stand-kart-behind').value = s.kart_behind || '';
     el('modal-standings-overlay').classList.add('open');
   }
 
@@ -198,6 +208,8 @@ const Dashboard = (() => {
       position: el('stand-pos').value || null,
       gap_ahead: el('stand-ahead').value || null,
       gap_behind: el('stand-behind').value || null,
+      kart_ahead: el('stand-kart-ahead').value || null,
+      kart_behind: el('stand-kart-behind').value || null,
     };
     await apiPost('/api/standings', body);
     closeModal('modal-standings-overlay');
